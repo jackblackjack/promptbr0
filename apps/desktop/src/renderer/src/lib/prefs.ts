@@ -1,0 +1,83 @@
+/**
+ * Small typed localStorage preference store. `usePref` re-renders on change
+ * (via useSyncExternalStore), so settings apply live. Theme has its own
+ * module (lib/theme.ts) because it must also run pre-paint in index.html.
+ */
+import { useSyncExternalStore } from "react";
+
+export type EditorModePref = "edit" | "preview" | "split";
+export type PromptHistoryViewPref = "list" | "graph";
+export type UiLanguagePref = "en" | "ru";
+
+interface PrefsSchema {
+  /** UI language for the desktop renderer. The key name is "ui-lang" for
+   * backwards compatibility with builds that shipped the stashed version. */
+  "ui-lang": UiLanguagePref;
+  /** CodeMirror font size in px; applied via the --cm-font-size CSS var. */
+  "editor-font-size": number;
+  /** Default editor mode when opening the current version of a prompt. */
+  "editor-mode": EditorModePref;
+  /** CodeMirror line wrapping. */
+  "word-wrap": boolean;
+  /** Persist in-progress edits as drafts. Off = edits live only in memory until saved as a version. */
+  "autosave-drafts": boolean;
+  /** Presentation used by each prompt's History tab. */
+  "prompt-history-view": PromptHistoryViewPref;
+}
+
+export type PrefKey = keyof PrefsSchema;
+
+const DEFAULTS: PrefsSchema = {
+  "ui-lang": "en",
+  "editor-font-size": 13,
+  "editor-mode": "edit",
+  "word-wrap": true,
+  "autosave-drafts": true,
+  "prompt-history-view": "list",
+};
+
+const PREFIX = "promptbr0:pref:";
+
+const listeners = new Set<() => void>();
+
+function emit() {
+  for (const listener of listeners) listener();
+}
+
+export function getPref<K extends PrefKey>(key: K): PrefsSchema[K] {
+  try {
+    const raw = localStorage.getItem(PREFIX + key);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (key === "prompt-history-view" && parsed !== "list" && parsed !== "graph") {
+        return DEFAULTS[key];
+      }
+      if (key === "ui-lang" && parsed !== "en" && parsed !== "ru") {
+        return DEFAULTS[key];
+      }
+      if (typeof parsed === typeof DEFAULTS[key]) return parsed as PrefsSchema[K];
+    }
+  } catch {
+    // fall through to the default
+  }
+  return DEFAULTS[key];
+}
+
+export function setPref<K extends PrefKey>(key: K, value: PrefsSchema[K]): void {
+  try {
+    localStorage.setItem(PREFIX + key, JSON.stringify(value));
+  } catch {
+    // persistence is best-effort
+  }
+  emit();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function usePref<K extends PrefKey>(key: K): [PrefsSchema[K], (value: PrefsSchema[K]) => void] {
+  const value = useSyncExternalStore(subscribe, () => JSON.stringify(getPref(key)));
+  return [JSON.parse(value) as PrefsSchema[K], (next) => setPref(key, next)];
+}

@@ -1,0 +1,822 @@
+// @vitest-environment jsdom
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  AiProviderDto,
+  AiRunGroupDto,
+  AiRunInput,
+  AiRunProgressEvent,
+  PromptDetail,
+  RunGroupDto,
+  VersionDto,
+} from "../../../shared/ipc.js";
+import { installMockBridge, type MockBridge } from "../test/mock-bridge";
+import { createTestQueryClient, renderApp } from "../test/render";
+import { useAppState } from "../state/app-state";
+import { MainPane } from "./MainPane";
+import { getRunVariables, setRunVariables } from "../lib/ai-prefs";
+
+vi.mock("@uiw/react-codemirror", () => ({
+  default: ({
+    value,
+    onChange,
+    readOnly,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    readOnly?: boolean;
+  }) => (
+    <textarea
+      aria-label="Prompt editor"
+      value={value}
+      readOnly={readOnly}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+}));
+
+// Render counter for the memoized Inspector: it renders TagEditor with the
+// `compact` prop (the MainPane tag row does not), so each compact render
+// means the Inspector function body ran.
+const inspectorRenders = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./TagEditor", () => ({
+  TagEditor: ({ compact }: { compact?: boolean }) => {
+    if (compact) inspectorRenders.count += 1;
+    return null;
+  },
+}));
+
+const prompt: PromptDetail = {
+  id: "prompt-1",
+  title: "Greeting",
+  description: null,
+  icon: null,
+  isStarred: false,
+  versionLabel: "v1",
+  tags: [],
+  createdAt: "2026-08-01T09:00:00Z",
+  updatedAt: "2026-08-01T09:00:00Z",
+  deletedAt: null,
+  currentVersionId: "v-1",
+  draftContent: null,
+  draftBaseVersionId: null,
+  collectionIds: [],
+};
+
+const version: VersionDto = {
+  id: "v-1",
+  promptId: "prompt-1",
+  branchId: "branch-1",
+  branchName: "main",
+  parentVersionId: null,
+  number: 1,
+  label: null,
+  displayLabel: "v1",
+  changeNote: null,
+  author: "user",
+  createdAt: "2026-08-01T09:00:00Z",
+  isCurrent: true,
+};
+
+const provider: AiProviderDto = {
+  id: "prov-local",
+  type: "openai-compatible",
+  driver: "openai-compatible",
+  name: "Local box",
+  baseUrl: "http://127.0.0.1:1234/v1",
+  enabled: true,
+  hasApiKey: false,
+  createdAt: "2026-08-01T09:00:00Z",
+  models: [{ modelId: "model-live", displayName: null, enabled: true }],
+};
+
+const historyGroup: RunGroupDto = {
+  runGroupId: "rg-hist",
+  createdAt: "2026-08-01T10:00:00Z",
+  runs: [
+    {
+      id: "run-hist",
+      versionId: "v-1",
+      provider: "prov-local",
+      providerName: "Local box",
+      model: "model-hist",
+      status: "completed",
+      outcomeRating: null,
+      output: "history output",
+      error: null,
+      latencyMs: 100,
+      usage: null,
+      costUsd: null,
+      judgeRationale: null,
+      judgeScores: null,
+      createdAt: "2026-08-01T10:00:01Z",
+    },
+  ],
+};
+
+const freshGroup: AiRunGroupDto = {
+  runGroupId: "rg-live",
+  promptId: "prompt-1",
+  versionId: "v-1",
+  createdAt: "2026-08-01T11:00:00Z",
+  runs: [
+    {
+      runId: "run-live-1",
+      providerId: "prov-local",
+      providerName: "Local box",
+      modelId: "model-live",
+      status: "completed",
+      output: "fresh output",
+      error: null,
+      latencyMs: 120,
+      usage: { inputTokens: 5, outputTokens: 5 },
+      costUsd: null,
+    },
+  ],
+};
+
+let bridge: MockBridge;
+/** Resolves the in-flight ai:run invoke. */
+let finishRun: (group: AiRunGroupDto) => void;
+
+beforeEach(() => {
+  // Per-prompt model selections persist in localStorage — reset between tests.
+  localStorage.clear();
+  bridge = installMockBridge();
+  bridge.versions.list.mockResolvedValue([version]);
+  // versions.get stays at its default null: the editor shows a spinner and
+  // the run falls back to empty content (keeps CodeMirror out of jsdom).
+  bridge.ai.providers.list.mockResolvedValue([provider]);
+  bridge.ai.catalog.get.mockResolvedValue(null);
+  bridge.ai.runGroups.mockResolvedValue([historyGroup]);
+  bridge.runs.list.mockResolvedValue([]);
+  bridge.ai.run.mockImplementation(
+    () => new Promise<AiRunGroupDto>((resolve) => { finishRun = resolve; }),
+  );
+});
+
+/** Selects model-live in the picker and clicks Run. */
+async function startRun(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /select models/i }));
+  await user.click(await screen.findByRole("option", { name: /model-live/i }));
+  await user.click(screen.getByRole("button", { name: "Run" }));
+}
+
+function HistoricalVersionControl({ versionId }: { versionId: string }) {
+  const { setViewingVersionId } = useAppState();
+  return <button onClick={() => setViewingVersionId(versionId)}>View historical version</button>;
+}
+
+describe("MainPane live run progress", () => {
+  async function overlappingRuns(
+    beforeSwitch?: (user: ReturnType<typeof userEvent.setup>, input: AiRunInput) => Promise<void>,
+  ) {
+    const user = userEvent.setup();
+    const pending: { input: AiRunInput; resolve: (group: AiRunGroupDto) => void; reject: (error: Error) => void }[] = [];
+    bridge.ai.run.mockImplementation((input) => new Promise<AiRunGroupDto>((resolve, reject) => {
+      pending.push({ input, resolve, reject });
+    }));
+    const view = renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await beforeSwitch?.(user, pending[0]!.input);
+    view.rerender(<MainPane prompt={{ ...prompt, id: "prompt-2", title: "Farewell" }} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await startRun(user);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    return { user, first: pending[0]!, second: pending[1]! };
+  }
+
+  function progress(input: AiRunInput, runGroupId: string, phase: AiRunProgressEvent["phase"], text?: string) {
+    act(() => bridge.emitRunProgress({
+      requestId: input.requestId, runGroupId, providerId: "prov-local", modelId: "model-live",
+      phase, ...(text === undefined ? {} : { text }),
+    }));
+  }
+
+  it("ignores delayed A events before B queues and cancels only B's group", async () => {
+    const { user, first, second } = await overlappingRuns();
+    expect(first.input.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second.input.requestId).not.toBe(first.input.requestId);
+    for (const phase of ["queued", "started", "delta", "completed", "error"] as const) {
+      progress(first.input, "group-a", phase, "stale A output");
+    }
+    expect(screen.queryByText("stale A output")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    // Matching non-queued progress cannot choose the persistent cancellation identity.
+    progress(second.input, "not-queued", "delta", "B output");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    progress(second.input, "group-b", "queued");
+    progress(second.input, "replacement-group", "queued");
+    progress(first.input, "group-a", "delta", "stale A output");
+    expect(screen.queryByText("stale A output")).toBeNull();
+    expect(screen.getByText("B output")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(bridge.ai.runCancel).toHaveBeenCalledExactlyOnceWith({ runGroupId: "group-b" });
+  }, 10_000);
+
+  it.each(["success", "error"] as const)("obsolete %s cannot clear or replace a newer live request", async (outcome) => {
+    const { first, second } = await overlappingRuns();
+    progress(second.input, "group-b", "queued");
+    progress(second.input, "group-b", "delta", "B stays live");
+    await act(async () => {
+      if (outcome === "success") first.resolve(freshGroup);
+      else first.reject(new Error("A failed"));
+    });
+    expect(within(screen.getByRole("dialog")).getByText("B stays live")).toBeInTheDocument();
+    expect(screen.queryByText("fresh output")).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("attributes A's completion toast to A after B starts on a different prompt", async () => {
+    const { first } = await overlappingRuns();
+    expect(first.input.promptId).toBe("prompt-1");
+    await act(async () => first.resolve(freshGroup));
+    expect(await screen.findByText('Run finished for "Greeting" — open it from Results')).toBeInTheDocument();
+    expect(screen.queryByText(/Run finished for "Farewell"/)).toBeNull();
+  });
+
+  it.each(["already-finished", "error"] as const)(
+    "keeps B cancelling when A's cancellation returns %s late", async (outcome) => {
+      const cancellations: {
+        resolve: (result: { cancelled: boolean }) => void;
+        reject: (error: Error) => void;
+      }[] = [];
+      bridge.ai.runCancel.mockImplementation(() => new Promise((resolve, reject) => {
+        cancellations.push({ resolve, reject });
+      }));
+      const { user, second } = await overlappingRuns(async (user, input) => {
+        progress(input, "group-a", "queued");
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(screen.getByRole("button", { name: "Cancelling…" })).toBeDisabled();
+      });
+      progress(second.input, "group-b", "queued");
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(bridge.ai.runCancel.mock.calls).toEqual([
+        [{ runGroupId: "group-a" }], [{ runGroupId: "group-b" }],
+      ]);
+      expect(screen.getByRole("button", { name: "Cancelling…" })).toBeDisabled();
+
+      await act(async () => {
+        if (outcome === "already-finished") cancellations[0]!.resolve({ cancelled: false });
+        else cancellations[0]!.reject(new Error("A cancellation failed"));
+      });
+      expect(screen.getByRole("button", { name: "Cancelling…" })).toBeDisabled();
+
+      // B's own terminal callback must still release its indicator.
+      await act(async () => {
+        if (outcome === "already-finished") cancellations[1]!.resolve({ cancelled: false });
+        else cancellations[1]!.reject(new Error("B cancellation failed"));
+      });
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    },
+  );
+
+  it("drops stale variable keys before dialog submission, persistence and invocation", async () => {
+    const user = userEvent.setup();
+    setRunVariables(prompt.id, { stale: "secret", name: "Ada" });
+    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Hi {{name}}", draftBaseVersionId: "v-1" }} />);
+    await startRun(user);
+    const dialog = await screen.findByRole("dialog", { name: "Run variables" });
+    expect(within(dialog).getByRole("textbox")).toHaveValue("Ada");
+    await user.click(within(dialog).getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(bridge.ai.run).toHaveBeenCalledWith(expect.objectContaining({ variables: { name: "Ada" } })));
+    expect(getRunVariables(prompt.id)).toEqual({ name: "Ada" });
+  });
+
+  it("drops stale variable keys on the no-dialog path", async () => {
+    const user = userEvent.setup();
+    setRunVariables(prompt.id, { stale: "secret" });
+    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Plain", draftBaseVersionId: "v-1" }} />);
+    await startRun(user);
+    await waitFor(() => expect(bridge.ai.run).toHaveBeenCalledWith(expect.objectContaining({ variables: {} })));
+    expect(getRunVariables(prompt.id)).toEqual({});
+  });
+
+  it("projects the latest saved values before rerunning without a dialog", async () => {
+    const user = userEvent.setup();
+    setRunVariables(prompt.id, { name: "Ada" });
+    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Hi {{name}}", draftBaseVersionId: "v-1" }} />);
+    await startRun(user);
+    await user.click(within(await screen.findByRole("dialog", { name: "Run variables" })).getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(bridge.ai.run).toHaveBeenCalledTimes(1));
+    await act(async () => finishRun(freshGroup));
+    setRunVariables(prompt.id, { stale: "secret", name: "Grace" });
+    await user.click(screen.getByRole("button", { name: /re.?run/i }));
+    await waitFor(() => expect(bridge.ai.run).toHaveBeenLastCalledWith(expect.objectContaining({ variables: { name: "Grace" } })));
+    expect(getRunVariables(prompt.id)).toEqual({ name: "Grace" });
+  });
+  it("drives the live compare view through queued → streaming → completed", async () => {
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+
+    // Placeholder column opens immediately; no runGroupId yet → Cancel off.
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/waiting to start/i)).toBeInTheDocument();
+    // ("Running 0/1…" also appears on the Run button — scope to the dialog.)
+    expect(within(dialog).getByText(/running 0\/1/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /cancel/i })).toBeDisabled();
+
+    // The queued event delivers the runGroupId at request time — Cancel works
+    // before the first token (R6).
+    act(() => {
+      bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "queued",
+      });
+    });
+    expect(screen.getByRole("button", { name: /cancel/i })).toBeEnabled();
+
+    act(() => {
+      bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "delta",
+        text: "Hello wor",
+      });
+    });
+    expect(await screen.findByText("Hello wor")).toBeInTheDocument();
+
+    act(() => {
+      bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "completed",
+        text: "Hello world",
+        latencyMs: 120,
+        usage: { inputTokens: 5, outputTokens: 5 },
+        costUsd: null,
+      });
+    });
+    expect(await screen.findByText("Done · 120 ms")).toBeInTheDocument();
+
+    // The invoke resolves last; the settled view replaces the live one.
+    await act(async () => finishRun(freshGroup));
+    await waitFor(() =>
+      expect(within(screen.getByRole("dialog")).getByText(/1\/1 succeeded/)).toBeInTheDocument(),
+    );
+    expect(within(screen.getByRole("dialog")).getByText("fresh output")).toBeInTheDocument();
+  });
+
+  it("reopens a dismissed running evaluation and cancels the same run group", async () => {
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await screen.findByText(/waiting to start/i);
+
+    act(() => {
+      bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "queued",
+      });
+    });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(/waiting to start/i)).toBeNull());
+
+    const runningButton = screen.getByRole("button", { name: /running 0\/1/i });
+    expect(runningButton).toBeEnabled();
+    await user.click(runningButton);
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(bridge.ai.runCancel).toHaveBeenCalledWith({ runGroupId: "rg-live" }),
+    );
+  });
+
+  it("does not re-render the memoized Inspector on streamed deltas", async () => {
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await screen.findByText(/waiting to start/i);
+    act(() => {
+      bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "queued",
+      });
+    });
+    // Let the mount/refetch renders settle, then snapshot the render count.
+    await waitFor(() => expect(inspectorRenders.count).toBeGreaterThan(0));
+    const before = inspectorRenders.count;
+
+    // Streamed deltas re-render MainPane (live state lives there) but must
+    // not propagate into the memoized Inspector (its props keep identity).
+    for (const text of ["Hello", "Hello wor", "Hello world"]) {
+      act(() => {
+        bridge.emitRunProgress({
+          requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+          runGroupId: "rg-live",
+          providerId: "prov-local",
+          modelId: "model-live",
+          phase: "delta",
+          text,
+        });
+      });
+    }
+    expect(screen.getByText("Hello world")).toBeInTheDocument();
+    expect(inspectorRenders.count).toBe(before);
+  });
+
+  it("does not hijack an explicitly opened history group when a dismissed run finishes (R2)", async () => {
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+    await startRun(user);
+    await screen.findByText(/waiting to start/i);
+    act(() => {
+      bridge.emitRunProgress({
+        requestId: bridge.ai.run.mock.calls[0]![0].requestId,
+        runGroupId: "rg-live",
+        providerId: "prov-local",
+        modelId: "model-live",
+        phase: "queued",
+      });
+    });
+
+    // Dismiss the live view, then open a stored group from Results.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(/waiting to start/i)).toBeNull());
+    await user.click(screen.getByRole("tab", { name: /results/i }));
+    await user.click(await screen.findByRole("button", { name: /model-hist/i }));
+    expect(await screen.findByText("history output")).toBeInTheDocument();
+
+    // The in-flight run completes: the open history group must stay put.
+    await act(async () => finishRun(freshGroup));
+    expect(screen.getByText("history output")).toBeInTheDocument();
+    expect(screen.queryByText("fresh output")).toBeNull();
+    expect(await screen.findByText(/open it from Results/i)).toBeInTheDocument();
+  });
+});
+
+describe("MainPane restored prompt editing", () => {
+  it("autosaves an edit after restoring a trashed prompt without remounting the editor", async () => {
+    bridge.versions.get.mockResolvedValue({
+      ...version,
+      content: "Persisted version",
+      contentFormat: "markdown",
+    });
+    const trashedPrompt = { ...prompt, deletedAt: "2026-08-02T09:00:00Z" };
+    const view = renderApp(<MainPane prompt={trashedPrompt} />);
+
+    await screen.findByText("Persisted version");
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(bridge.prompts.restore).toHaveBeenCalledWith(prompt.id));
+
+    view.rerender(<MainPane prompt={prompt} />);
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const restoredEditor = screen.getByRole("textbox", { name: "Prompt editor" });
+    fireEvent.change(restoredEditor, { target: { value: "Restored edit" } });
+    view.unmount();
+
+    await waitFor(() =>
+      expect(bridge.drafts.set).toHaveBeenCalledWith(prompt.id, "Restored edit", version.id),
+    );
+  });
+});
+
+describe("MainPane version actions", () => {
+  it("opens a new variation from the displayed version without changing the preferred version", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    const variationVersion: VersionDto = {
+      ...historicalVersion,
+      id: "alt-v1",
+      branchId: "branch-alt",
+      branchName: "alt",
+      parentVersionId: historicalVersion.id,
+      displayLabel: "alt v1",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === currentVersion.id
+        ? currentVersion
+        : versionId === variationVersion.id
+          ? variationVersion
+          : historicalVersion),
+      content: versionId === currentVersion.id ? "Current content" : "Historical content",
+      contentFormat: "markdown",
+    }));
+    bridge.branches.create.mockImplementation(async () => {
+      listedVersions = [...listedVersions, variationVersion];
+      return {
+        branch: {
+          id: "branch-alt",
+          promptId: prompt.id,
+          name: "alt",
+          description: null,
+          createdAt: "2026-08-01T09:00:00Z",
+        },
+        version: variationVersion,
+      };
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    screen.getByRole("button", { name: "More actions" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Duplicate as variation…",
+      }),
+    );
+    await user.type(await screen.findByLabelText("Variation name"), "alt");
+    await user.click(screen.getByRole("button", { name: "Create variation" }));
+
+    await waitFor(() =>
+      expect(bridge.branches.create).toHaveBeenCalledWith({
+        promptId: prompt.id,
+        name: "alt",
+        fromVersionId: historicalVersion.id,
+      }),
+    );
+    expect(bridge.versions.setCurrent).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: /alt v1/i })).toBeInTheDocument();
+  });
+
+  it("duplicates the historical version being viewed into a new prompt", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === historicalVersion.id ? historicalVersion : currentVersion),
+      content: versionId === historicalVersion.id ? "Historical content" : "Current content",
+      contentFormat: "markdown",
+    }));
+    bridge.prompts.duplicate.mockResolvedValue({
+      ...prompt,
+      id: "prompt-copy",
+      title: "Greeting standalone",
+      currentVersionId: "copy-v1",
+    });
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Duplicate v1 as new prompt" }));
+    const title = await screen.findByLabelText("Title");
+    expect(title).toHaveValue("Greeting copy");
+    await user.clear(title);
+    await user.type(title, "Greeting standalone");
+    await user.click(screen.getByRole("button", { name: "Duplicate" }));
+
+    await waitFor(() =>
+      expect(bridge.prompts.duplicate).toHaveBeenCalledWith({
+        promptId: prompt.id,
+        versionId: historicalVersion.id,
+        title: "Greeting standalone",
+      }),
+    );
+  });
+
+  it("renames the version being viewed", async () => {
+    bridge.versions.updateLabel.mockResolvedValue({
+      ...version,
+      label: "Production",
+      displayLabel: "Production",
+    });
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={prompt} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (1)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Rename v1" }));
+    await user.type(await screen.findByLabelText("Version name"), "Production");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    expect(bridge.versions.updateLabel).toHaveBeenCalledWith(version.id, "Production");
+  });
+
+  it("clears a custom version name to restore its automatic label", async () => {
+    const namedVersion = { ...version, label: "Production", displayLabel: "Production" };
+    bridge.versions.list.mockResolvedValue([namedVersion]);
+    bridge.versions.updateLabel.mockResolvedValue({ ...version, label: null, displayLabel: "v1" });
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, versionLabel: "Production" }} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (1)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Rename Production" }));
+    const name = await screen.findByLabelText("Version name");
+    expect(name).toHaveValue("Production");
+    await user.clear(name);
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    expect(bridge.versions.updateLabel).toHaveBeenCalledWith(version.id, null);
+  });
+
+  it("deletes a historical version from History but offers no delete action for current", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(await screen.findByRole("button", { name: "Delete v1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete v2" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Delete v1" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByText(/run results and ratings will be permanently removed/i),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/notes become prompt-level notes/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/surviving version numbers stay unchanged/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Delete version" }));
+
+    await waitFor(() => expect(bridge.versions.delete).toHaveBeenCalledWith(historicalVersion.id));
+  });
+
+  it("stays rendered when a version selected for comparison is deleted", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    const survivingCurrent: VersionDto = {
+      ...currentVersion,
+      parentVersionId: null,
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    bridge.versions.delete.mockImplementation(async () => {
+      listedVersions = [survivingCurrent];
+    });
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />);
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("checkbox", { name: "Select v1 to compare" }));
+    expect(screen.getByText(/v1 selected — pick one more version to compare/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete v1" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete version" }));
+
+    expect(await screen.findByRole("tab", { name: "History (1)" })).toBeInTheDocument();
+    expect(screen.getByText("Current")).toBeInTheDocument();
+    expect(screen.queryByText(/selected — pick one more version to compare/i)).toBeNull();
+  });
+
+  it("closes a version dialog when that version disappears during a refetch", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+      { queryClient },
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    await user.click(await screen.findByRole("button", { name: "Rate" }));
+    expect(await screen.findByRole("dialog", { name: "Rate v1" })).toBeInTheDocument();
+
+    listedVersions = [{ ...currentVersion, parentVersionId: null, number: 1, displayLabel: "v1" }];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Rate v1" })).toBeNull());
+  });
+
+  it("closes History confirmation when its version disappears during a refetch", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    let listedVersions = [historicalVersion, currentVersion];
+    bridge.versions.list.mockImplementation(async () => listedVersions);
+    const queryClient = createTestQueryClient();
+    const user = userEvent.setup();
+    renderApp(<MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />, {
+      queryClient,
+    });
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "History (2)" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await user.click(await screen.findByRole("button", { name: "Set as current" }));
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+
+    listedVersions = [{ ...currentVersion, parentVersionId: null, number: 1, displayLabel: "v1" }];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("deletes the historical version being viewed and returns to current", async () => {
+    const historicalVersion: VersionDto = { ...version, isCurrent: false };
+    const currentVersion: VersionDto = {
+      ...version,
+      id: "v-2",
+      parentVersionId: historicalVersion.id,
+      number: 2,
+      displayLabel: "v2",
+    };
+    bridge.versions.list.mockResolvedValue([historicalVersion, currentVersion]);
+    bridge.versions.get.mockImplementation(async (versionId) => ({
+      ...(versionId === historicalVersion.id ? historicalVersion : currentVersion),
+      content: versionId === historicalVersion.id ? "Historical content" : "Current content",
+      contentFormat: "markdown",
+    }));
+    const user = userEvent.setup();
+    renderApp(
+      <>
+        <HistoricalVersionControl versionId={historicalVersion.id} />
+        <MainPane prompt={{ ...prompt, currentVersionId: currentVersion.id }} />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "View historical version" }));
+    expect(await screen.findByText("Historical content")).toBeInTheDocument();
+    screen.getByRole("button", { name: "More actions" }).focus();
+    await user.keyboard("{Enter}");
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Delete version…" }));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete version" }),
+    );
+
+    await waitFor(() => expect(bridge.versions.delete).toHaveBeenCalledWith(historicalVersion.id));
+    await waitFor(() => expect(screen.queryByText(/You're viewing/)).toBeNull());
+  });
+});

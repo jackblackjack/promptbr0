@@ -1,0 +1,62 @@
+# Sync between your devices
+
+PromptBr0 syncs your library directly between your own desktop devices on a
+local network or VPN. It does not require an account or a cloud copy of your
+library. Changes remain saved locally while a device is offline and catch up
+when paired devices can reach each other.
+
+## Pair two devices
+
+1. On both devices, open **Settings → Sync** and enable **Device-to-device
+   sync**. On macOS, allow the Local Network permission when asked.
+2. On one device, select **Show pairing code**.
+3. On the other device, enter that code under **Add a device** and select the
+   nearby device.
+4. If the devices are connected through a VPN or do not appear nearby, use
+   **Pair by address** and enter the other device's address and listening port.
+
+PromptBr0 chooses a listening port the first time sync starts and keeps
+using it. You can see or change it under **Settings → Sync → This device**.
+Changing the port restarts sync networking; use a port from 1024 to 65535.
+
+Each pairing code confirms the other device's identity. After pairing,
+PromptBr0 connects only to that saved device unless you choose to forget it.
+
+All paired devices must use compatible sync data. Upgrade every paired desktop
+or mobile device to a version that supports protocol 4 and sync schema 13 before
+sync can resume; mixed-version devices are rejected before pairing or applying
+changes.
+
+## What syncs
+
+Prompts, versions, variations, tags, collections, notes, ratings, and run records
+sync. Changes made through the desktop app or CLI server all flow into the
+same library and are included.
+
+Your API keys, app settings, and local model catalog stay on each device.
+
+## Conflicts and status
+
+Concurrent additions are retained. When two devices change the same small
+prompt detail, PromptBr0 chooses one consistent result and keeps the prompt
+history available for review. Each device's sync footer shows whether it is
+synced, syncing, waiting for devices, offline, or needs attention.
+
+Select the footer or return to **Settings → Sync** to see paired devices, run
+**Sync now**, rename this device, or forget a device. Forgetting a device stops
+automatic reconnection; pair it again if you want to restore access.
+
+## If pairing fails
+
+- Upgrade every paired desktop or mobile device; an older sync protocol or data
+  schema cannot pair or resume sync with a current device.
+- Confirm sync is enabled on both devices and re-open the pairing code.
+- Check that both devices can reach each other on the same network or VPN.
+- On macOS, check that PromptBr0 has Local Network permission.
+- Use **Pair by address** when network discovery is unavailable.
+- If a firewall is enabled, allow PromptBr0 to accept incoming connections
+  on the listening port shown in **Settings → Sync**. Firewall controls vary by
+  operating system and network; allow only the private networks or VPNs you
+  trust.
+- If PromptBr0 says the port is unavailable, choose another port in
+  **Settings → Sync** and use that new port for manual pairing.

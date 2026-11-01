@@ -1,0 +1,424 @@
+/**
+ * Test double for the preload bridge (`window.promptbr0`). Every method is
+ * a `vi.fn()` with a sensible resolved default, so components render without
+ * touching Electron IPC; individual tests override only what they assert on:
+ *
+ *   const bridge = installMockBridge();
+ *   bridge.ai.providers.list.mockResolvedValue([provider]);
+ *
+ * `installMockBridge` returns the typed mock and registers cleanup to delete
+ * it from `window` after each test.
+ */
+import { afterEach, vi, type Mock } from "vitest";
+import type {
+  AiRunProgressEvent,
+  PromptBr0Api,
+  QuickPaletteState,
+  SyncPairRequestClosedEvent,
+  SyncPairRequestEvent,
+  SyncStatusDto,
+  UpdateStateDto,
+} from "../../../shared/ipc.js";
+
+type Mocked<T> = T extends (...args: infer A) => infer R
+  ? Mock<(...args: A) => R>
+  : { [K in keyof T]: Mocked<T[K]> };
+
+/** The bridge with every leaf function replaced by a typed vi mock. */
+export type MockBridge = Mocked<PromptBr0Api> & {
+  /** Delivers a quick-palette:opened event to subscribed listeners. */
+  emitQuickPaletteOpen(sessionId: string): void;
+  /** Delivers a quick-palette:closed event to subscribed listeners. */
+  emitQuickPaletteClosed(sessionId: string): void;
+  /** Delivers an ai:run-progress event to every subscribed renderer listener. */
+  emitRunProgress(event: AiRunProgressEvent): void;
+  /** Delivers a promptbr0://import deep link to subscribed listeners. */
+  emitOpenImport(url: string): void;
+  /** Delivers a promptbr0://import-markdown deep link to subscribed listeners. */
+  emitOpenMarkdownImport(url: string): void;
+  /** Delivers a sync:state-changed event to subscribed listeners. */
+  emitSyncState(status: SyncStatusDto): void;
+  /** Delivers a sync:pair-request event to subscribed listeners. */
+  emitSyncPairRequest(event: SyncPairRequestEvent): void;
+  /** Delivers a sync:pair-request-closed event to subscribed listeners. */
+  emitSyncPairRequestClosed(event: SyncPairRequestClosedEvent): void;
+  /** Delivers an updates:state-changed event to subscribed listeners. */
+  emitUpdateState(state: UpdateStateDto): void;
+  /** Delivers the application menu's Check for Updates action. */
+  emitOpenUpdates(): void;
+  /** Delivers the application menu's About action. */
+  emitOpenAbout(): void;
+};
+
+const notStubbed = () => Promise.reject(new Error("bridge method not stubbed in this test"));
+
+export function createMockBridge(): MockBridge {
+  // onRunProgress listeners registered by components under test; the default
+  // implementation captures them so tests can drive progress events.
+  const progressListeners = new Set<(event: AiRunProgressEvent) => void>();
+  const quickPaletteOpenListeners = new Set<(sessionId: string) => void>();
+  const quickPaletteClosedListeners = new Set<(sessionId: string) => void>();
+  // onOpenImport listeners (promptbr0:// deep links), driven by emitOpenImport.
+  const importListeners = new Set<(url: string) => void>();
+  const markdownImportListeners = new Set<(url: string) => void>();
+  // sync push listeners, driven by emitSyncState / emitSyncPairRequest.
+  const syncStateListeners = new Set<(status: SyncStatusDto) => void>();
+  const syncPairListeners = new Set<(event: SyncPairRequestEvent) => void>();
+  const syncPairClosedListeners = new Set<(event: SyncPairRequestClosedEvent) => void>();
+  const updateStateListeners = new Set<(state: UpdateStateDto) => void>();
+  const openUpdatesListeners = new Set<() => void>();
+  const openAboutListeners = new Set<() => void>();
+
+  const disabledSyncStatus: SyncStatusDto = {
+    enabled: false,
+    listening: false,
+    listenPort: null,
+    listenError: null,
+    deviceName: "Test Mac",
+    fingerprintShort: "",
+    pairingActive: false,
+    pairingCode: null,
+    peers: [],
+    nearby: [],
+    pendingDirty: 0,
+    lastSyncedAt: null,
+  };
+  const initialUpdateState: UpdateStateDto = {
+    status: "not-checked",
+    currentVersion: "0.0.0-test",
+    latestVersion: null,
+    platform: "macOS",
+    architecture: "arm64",
+    automaticChecksEnabled: true,
+    lastCheckedAt: null,
+    checkSource: null,
+    releaseName: null,
+    releaseNotes: null,
+    publishedAt: null,
+    assets: [],
+    errorMessage: null,
+  };
+  const initialQuickPaletteState: QuickPaletteState = {
+    settings: {
+      enabled: false,
+      accelerator: "CommandOrControl+Shift+Space",
+    },
+    registration: "disabled",
+    registrationError: null,
+    sessionId: null,
+  };
+  // Typed as the real API first so every default implementation is checked
+  // against the real signatures, then widened to the mock view for tests.
+  const api: PromptBr0Api = {
+    quickPalette: {
+      getState: vi.fn(async () => initialQuickPaletteState),
+      updateSettings: vi.fn(async (settings) => ({
+        ...initialQuickPaletteState,
+        settings,
+        registration: settings.enabled ? ("registered" as const) : ("disabled" as const),
+      })),
+      search: vi.fn(async () => ({ ok: true as const, value: [] })),
+      resolve: vi.fn(notStubbed),
+      render: vi.fn(notStubbed),
+      copy: vi.fn(notStubbed),
+      dismiss: vi.fn(async () => {}),
+      onOpen: vi.fn((callback: (sessionId: string) => void) => {
+        quickPaletteOpenListeners.add(callback);
+        return () => {
+          quickPaletteOpenListeners.delete(callback);
+        };
+      }),
+      onClosed: vi.fn((callback: (sessionId: string) => void) => {
+        quickPaletteClosedListeners.add(callback);
+        return () => {
+          quickPaletteClosedListeners.delete(callback);
+        };
+      }),
+    },
+    tray: {
+      getState: vi.fn(async () => ({ enabled: false, available: true, error: null })),
+      setEnabled: vi.fn(async ({ enabled }) => ({ enabled, available: true, error: null })),
+    },
+    prompts: {
+      list: vi.fn(async () => []),
+      get: vi.fn(async () => null),
+      create: vi.fn(notStubbed),
+      duplicate: vi.fn(notStubbed),
+      update: vi.fn(notStubbed),
+      setStarred: vi.fn(async () => {}),
+      softDelete: vi.fn(async () => {}),
+      restore: vi.fn(async () => {}),
+      hardDelete: vi.fn(async () => {}),
+      exportJson: vi.fn(async () => ({ canceled: true })),
+    },
+    versions: {
+      create: vi.fn(notStubbed),
+      list: vi.fn(async () => []),
+      get: vi.fn(async () => null),
+      setCurrent: vi.fn(async () => {}),
+      updateContent: vi.fn(notStubbed),
+      updateLabel: vi.fn(notStubbed),
+      delete: vi.fn(async () => {}),
+    },
+    drafts: {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => {}),
+    },
+    branches: {
+      list: vi.fn(async () => []),
+      create: vi.fn(notStubbed),
+    },
+    notes: {
+      add: vi.fn(notStubbed),
+      list: vi.fn(async () => []),
+      delete: vi.fn(async () => {}),
+    },
+    tags: {
+      create: vi.fn(notStubbed),
+      list: vi.fn(async () => []),
+      addToPrompt: vi.fn(async () => {}),
+      removeFromPrompt: vi.fn(async () => {}),
+    },
+    collections: {
+      create: vi.fn(notStubbed),
+      update: vi.fn(async () => {}),
+      move: vi.fn(async () => {}),
+      delete: vi.fn(async () => {}),
+      tree: vi.fn(async () => ({ id: "root", name: "", sortOrder: 0, parentId: null, promptCount: 0, children: [] })),
+      byParent: vi.fn(async () => []),
+      list: vi.fn(async () => []),
+      addPrompt: vi.fn(async () => {}),
+      removePrompt: vi.fn(async () => {}),
+      forPrompt: vi.fn(async () => []),
+      path: vi.fn(async () => []),
+    },
+    search: vi.fn(async () => []),
+    ratings: {
+      add: vi.fn(notStubbed),
+      latest: vi.fn(async () => null),
+      averages: vi.fn(async () => ({
+        effectiveness: null,
+        clarity: null,
+        completeness: null,
+        actionability: null,
+        overall: null,
+        count: 0,
+      })),
+      forPromptVersions: vi.fn(async () => ({})),
+    },
+    runs: {
+      add: vi.fn(notStubbed),
+      list: vi.fn(async () => []),
+      delete: vi.fn(async () => {}),
+      updateOutcome: vi.fn(notStubbed),
+      updateMetrics: vi.fn(notStubbed),
+    },
+    library: {
+      stats: vi.fn(async () => ({
+        prompts: 0,
+        versions: 0,
+        branches: 0,
+        tags: 0,
+        collections: 0,
+        notes: 0,
+        runs: 0,
+      })),
+      exportJson: vi.fn(async () => ({ canceled: true })),
+      importJson: vi.fn(async () => ({ canceled: true })),
+      backupNow: vi.fn(async () => ""),
+      emptyTrash: vi.fn(async () => 0),
+      recentActivity: vi.fn(async () => []),
+    },
+    suggestions: {
+      list: vi.fn(async () => []),
+      approve: vi.fn(async () => {}),
+      reject: vi.fn(async () => {}),
+    },
+    markdown: {
+      preview: vi.fn(notStubbed),
+      confirm: vi.fn(notStubbed),
+      discard: vi.fn(async () => {}),
+      onOpenImport: vi.fn((callback: (url: string) => void) => {
+        markdownImportListeners.add(callback);
+        return () => {
+          markdownImportListeners.delete(callback);
+        };
+      }),
+    },
+    ai: {
+      providers: {
+        create: vi.fn(notStubbed),
+        update: vi.fn(notStubbed),
+        delete: vi.fn(async () => {}),
+        list: vi.fn(async () => []),
+        test: vi.fn(async () => ({ ok: true })),
+        connectEnv: vi.fn(notStubbed),
+        setModels: vi.fn(notStubbed),
+        setModelHidden: vi.fn(notStubbed),
+      },
+      envDetect: vi.fn(async () => ({})),
+      providerTypes: vi.fn(async () => []),
+      catalog: {
+        get: vi.fn(async () => null),
+        refresh: vi.fn(async () => ({ ok: true, catalog: null })),
+      },
+      run: vi.fn(notStubbed),
+      onRunProgress: vi.fn((callback: (event: AiRunProgressEvent) => void) => {
+        progressListeners.add(callback);
+        return () => {
+          progressListeners.delete(callback);
+        };
+      }),
+      runCancel: vi.fn(async () => ({ cancelled: true })),
+      assist: vi.fn(notStubbed),
+      judge: vi.fn(notStubbed),
+      runGroups: vi.fn(async () => []),
+    },
+    updates: {
+      getState: vi.fn(async () => initialUpdateState),
+      check: vi.fn(async () => initialUpdateState),
+      setAutomaticChecks: vi.fn(async (enabled) => ({
+        ...initialUpdateState,
+        automaticChecksEnabled: enabled,
+      })),
+      openDownload: vi.fn(async () => {}),
+      openReleaseNotes: vi.fn(async () => {}),
+      onStateChanged: vi.fn((callback: (state: UpdateStateDto) => void) => {
+        updateStateListeners.add(callback);
+        return () => {
+          updateStateListeners.delete(callback);
+        };
+      }),
+      onOpen: vi.fn((callback: () => void) => {
+        openUpdatesListeners.add(callback);
+        return () => {
+          openUpdatesListeners.delete(callback);
+        };
+      }),
+    },
+    app: {
+      info: vi.fn(async () => ({
+        version: "0.0.0-test",
+        dbPath: "",
+        electronVersion: "",
+        chromeVersion: "",
+        nodeVersion: "",
+      })),
+      setLanguage: vi.fn(async () => {}),
+      onOpenAbout: vi.fn((callback: () => void) => {
+        openAboutListeners.add(callback);
+        return () => {
+          openAboutListeners.delete(callback);
+        };
+      }),
+      onOpenSettings: vi.fn(() => () => {}),
+      openExternal: vi.fn(async () => {}),
+      licensesText: vi.fn(async () =>
+        [
+          "# PromptBr0 — Third-Party Notices",
+          "",
+          "Bundled test fixture for the licenses dialog.",
+          "",
+          "Notes:",
+          "",
+          "- Dual-licensed packages use the permissive branch.",
+          "",
+          "---",
+          "",
+          "## alpha-pkg@1.2.3",
+          "",
+          "License: ISC",
+          "",
+          "```",
+          "Fake license text for alpha-pkg.",
+          "```",
+          "",
+          "## @beta-scope/beta-pkg@2.0.0",
+          "",
+          "License: Apache-2.0",
+          "",
+          "(No license file present in the package; license text for Apache-2.0 applies.)",
+          "",
+        ].join("\n"),
+      ),
+    },
+    sync: {
+      getStatus: vi.fn(async () => disabledSyncStatus),
+      setEnabled: vi.fn(async (enabled: boolean) => ({ ...disabledSyncStatus, enabled })),
+      setDeviceName: vi.fn(async (name: string) => ({ ...disabledSyncStatus, deviceName: name })),
+      setListenPort: vi.fn(async (port: number) => ({ ...disabledSyncStatus, listenPort: port })),
+      beginPairing: vi.fn(async () => disabledSyncStatus),
+      cancelPairing: vi.fn(async () => disabledSyncStatus),
+      pairWithCode: vi.fn(async () => ({ ok: true })),
+      respondPairing: vi.fn(async () => {}),
+      forgetDevice: vi.fn(async () => disabledSyncStatus),
+      now: vi.fn(async () => disabledSyncStatus),
+      onStateChanged: vi.fn((callback: (status: SyncStatusDto) => void) => {
+        syncStateListeners.add(callback);
+        return () => {
+          syncStateListeners.delete(callback);
+        };
+      }),
+      onPairRequest: vi.fn((callback: (event: SyncPairRequestEvent) => void) => {
+        syncPairListeners.add(callback);
+        return () => {
+          syncPairListeners.delete(callback);
+        };
+      }),
+      onPairRequestClosed: vi.fn((callback: (event: SyncPairRequestClosedEvent) => void) => {
+        syncPairClosedListeners.add(callback);
+        return () => {
+          syncPairClosedListeners.delete(callback);
+        };
+      }),
+    },
+  };
+  return Object.assign(api as unknown as MockBridge, {
+    emitQuickPaletteOpen: (sessionId: string) => {
+      for (const listener of [...quickPaletteOpenListeners]) listener(sessionId);
+    },
+    emitQuickPaletteClosed: (sessionId: string) => {
+      for (const listener of [...quickPaletteClosedListeners]) listener(sessionId);
+    },
+    emitRunProgress: (event: AiRunProgressEvent) => {
+      for (const listener of [...progressListeners]) listener(event);
+    },
+    emitOpenImport: (url: string) => {
+      for (const listener of [...importListeners]) listener(url);
+    },
+    emitOpenMarkdownImport: (url: string) => {
+      for (const listener of [...markdownImportListeners]) listener(url);
+    },
+    emitSyncState: (status: SyncStatusDto) => {
+      for (const listener of [...syncStateListeners]) listener(status);
+    },
+    emitSyncPairRequest: (event: SyncPairRequestEvent) => {
+      for (const listener of [...syncPairListeners]) listener(event);
+    },
+    emitSyncPairRequestClosed: (event: SyncPairRequestClosedEvent) => {
+      for (const listener of [...syncPairClosedListeners]) listener(event);
+    },
+    emitUpdateState: (state: UpdateStateDto) => {
+      for (const listener of [...updateStateListeners]) listener(state);
+    },
+    emitOpenUpdates: () => {
+      for (const listener of [...openUpdatesListeners]) listener();
+    },
+    emitOpenAbout: () => {
+      for (const listener of [...openAboutListeners]) listener();
+    },
+  });
+}
+
+/**
+ * Installs a fresh mock bridge on `window.promptbr0` and returns it.
+ * The bridge is removed from `window` after each test.
+ */
+export function installMockBridge(): MockBridge {
+  const bridge = createMockBridge();
+  (window as { promptbr0?: unknown }).promptbr0 = bridge;
+  afterEach(() => {
+    delete (window as { promptbr0?: unknown }).promptbr0;
+  });
+  return bridge;
+}

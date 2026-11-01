@@ -1,0 +1,2355 @@
+import { randomUUID } from "node:crypto";
+import {
+  refreshPromptSearchMetadata,
+  refreshVersionSearchRow,
+  deleteVersionSearchRow,
+  deletePromptSearchRows,
+  rebuildPromptSearchIndex,
+} from "./reindex.js";
+import { preflightLibraryImport, type LibraryExport } from "./import-validation.js";
+import type BetterSqlite3 from "better-sqlite3";
+import type {
+  BranchRow,
+  CollectionPromptRow,
+  CollectionRow,
+  NoteRow,
+  PromptRow,
+  PromptTagRow,
+  ProviderModelRow,
+  ProviderRow,
+  RatingRow,
+  RatingTargetType,
+  RunRow,
+  RunStatus,
+  SettingRow,
+  TagRow,
+  VersionRow,
+  VersionSource,
+} from "./types.js";
+
+export type { LibraryExport } from "./import-validation.js";
+
+const now = () => new Date().toISOString();
+
+const RATING_DIMENSIONS = ["effectiveness", "clarity", "completeness", "actionability"] as const;
+
+/** metrics_json keys owned by run execution — updateRunMetrics patches must not touch them. */
+const RESERVED_METRICS_KEYS = new Set(["usage", "costUsd", "promptContentCaptured"]);
+type RatingDimension = (typeof RATING_DIMENSIONS)[number];
+
+export type PromptSort = "updated" | "created" | "title" | "rating";
+
+export interface ListPromptsOptions {
+  sort?: PromptSort;
+  /** Prompts must carry at least one of these tags. */
+  tagIds?: string[];
+  collectionId?: string;
+  starred?: boolean;
+  includeDeleted?: boolean;
+  /** Only soft-deleted prompts (Trash view). Overrides `includeDeleted`. */
+  deletedOnly?: boolean;
+  /** Only prompts whose average rating (across all dimensions) is >= this. */
+  minRating?: number;
+}
+
+export interface ActivityItem {
+  prompt_id: string;
+  prompt_title: string;
+  version_id: string;
+  number: number;
+  label: string | null;
+  branch_name: string;
+  change_note: string | null;
+  created_at: string;
+}
+
+export interface VersionWithBranch extends VersionRow {
+  branch_name: string;
+}
+
+/** A pending agent suggestion, joined with its prompt title and branch name. */
+export interface SuggestionItem extends VersionWithBranch {
+  prompt_title: string;
+}
+
+/** One run inside a multi-model group, as shown by the compare view. */
+export interface RunGroupItem {
+  id: string;
+  versionId: string;
+  provider: string | null;
+  /** Null when the provider row was deleted after the run. */
+  providerName: string | null;
+  model: string | null;
+  status: RunStatus;
+  outcomeRating: number | null;
+  output: string | null;
+  error: string | null;
+  latencyMs: number | null;
+  /** Token usage parsed from metrics_json; null when unknown. */
+  usage: { inputTokens: number | null; outputTokens: number | null } | null;
+  /** Estimated USD cost parsed from metrics_json; null when unknown. */
+  costUsd: number | null;
+  /** Judge rationale parsed from metrics_json; null when never judged/applied. */
+  judgeRationale: string | null;
+  /** Judge dimension scores parsed from metrics_json; null when never judged/applied. */
+  judgeScores: JudgeScores | null;
+  createdAt: string;
+}
+
+/** The four LLM-judge scoring dimensions, each 1–5. */
+export interface JudgeScores {
+  effectiveness: number;
+  clarity: number;
+  completeness: number;
+  actionability: number;
+}
+
+/** One node in the collection folder tree. */
+export interface CollectionTreeItem extends CollectionRow {
+  children: CollectionTreeItem[];
+  /** Total prompts in this folder and all descendants. */
+  promptCount: number;
+}
+
+/** Input for updating a collection's metadata / parent. */
+export interface UpdateCollectionInput {
+  /** New name; when omitted the name is not changed. */
+  name?: string;
+  /** New parent folder id; null to move to top-level. */
+  parentCollectionId?: string | null;
+  /** New display order among siblings. */
+  sortOrder?: number;
+}
+
+/** One breadcrumb segment for a collection's ancestor chain. */
+export interface CollectionBreadcrumb {
+  id: string;
+  name: string;
+  parent_collection_id: string | null;
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseJudgeScores(value: unknown): JudgeScores | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const scores = {
+    effectiveness: asFiniteNumber(record["effectiveness"]),
+    clarity: asFiniteNumber(record["clarity"]),
+    completeness: asFiniteNumber(record["completeness"]),
+    actionability: asFiniteNumber(record["actionability"]),
+  };
+  return Object.values(scores).every((v) => v !== null) ? (scores as JudgeScores) : null;
+}
+
+/**
+ * Reads usage/cost/judge fields back out of a run's metrics_json blob.
+ * Defensive by design: corrupt or hand-written metrics degrade to nulls,
+ * never throw.
+ */
+export function parseRunMetrics(
+  metricsJson: string | null,
+): Pick<RunGroupItem, "usage" | "costUsd" | "judgeRationale" | "judgeScores"> {
+  const empty = { usage: null, costUsd: null, judgeRationale: null, judgeScores: null };
+  if (metricsJson === null) return empty;
+  try {
+    const parsed: unknown = JSON.parse(metricsJson);
+    if (typeof parsed !== "object" || parsed === null) return empty;
+    const record = parsed as Record<string, unknown>;
+    const rawUsage = record["usage"];
+    const usage =
+      typeof rawUsage === "object" && rawUsage !== null
+        ? {
+            inputTokens: asFiniteNumber((rawUsage as Record<string, unknown>)["inputTokens"]),
+            outputTokens: asFiniteNumber((rawUsage as Record<string, unknown>)["outputTokens"]),
+          }
+        : null;
+    const rawRationale = record["judgeRationale"];
+    return {
+      usage,
+      costUsd: asFiniteNumber(record["costUsd"]),
+      judgeRationale: typeof rawRationale === "string" ? rawRationale : null,
+      judgeScores: parseJudgeScores(record["judgeScores"]),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export interface RunGroup {
+  runGroupId: string;
+  createdAt: string;
+  runs: RunGroupItem[];
+}
+
+export interface SearchResult {
+  promptId: string;
+  versionId: string | null;
+  title: string;
+  snippet: string;
+  /** bm25 score; lower is a better match. */
+  rank: number;
+}
+
+export interface SearchFilters {
+  tagIds?: string[];
+  collectionId?: string;
+  starred?: boolean;
+}
+
+export interface AverageRatings {
+  effectiveness: number | null;
+  clarity: number | null;
+  completeness: number | null;
+  actionability: number | null;
+  overall: number | null;
+  count: number;
+}
+
+export interface ImportTableSummary {
+  inserted: number;
+  /** Rows merged into an existing row (tags/collections by unique name). */
+  merged: number;
+  /** Rows whose primary key was remapped due to a collision. */
+  remapped: number;
+  /** Rows skipped (duplicate junction pairs). */
+  skipped: number;
+}
+
+export type ImportSummary = Record<string, ImportTableSummary>;
+
+const MODEL_CATALOG_SETTING = "model_catalog";
+const MODEL_CATALOG_CREDENTIAL_TRUST_SETTING = "model_catalog_credential_trusted";
+
+/**
+ * Recursively collects all descendant collection ids under `rootId` (inclusive).
+ * Uses a SQLite recursive CTE — O(depth) per call, negligible for typical
+ * folder depths (2–5 levels).
+ */
+function listDescendantCollectionIds(db: BetterSqlite3.Database, rootId: string): string[] {
+  return db
+    .prepare<string, { id: string }>(
+      `WITH RECURSIVE descendants(id) AS (
+         SELECT ? UNION ALL
+         SELECT c.id FROM collections c INNER JOIN descendants d ON c.parent_collection_id = d.id
+       )
+       SELECT id FROM descendants`,
+    )
+    .all(rootId)
+    .map((row) => row.id);
+}
+
+/**
+ * Cohesive domain API over an open database handle. Obtain a handle via
+ * `openDatabase` / `openMemoryDatabase` (see `db.ts`), then:
+ *
+ *   const library = new PromptLibrary(db);
+ */
+export class PromptLibrary {
+  constructor(private readonly db: BetterSqlite3.Database) {}
+
+  private get<T>(sql: string, ...params: unknown[]): T | undefined {
+    return this.db.prepare(sql).get(...params) as T | undefined;
+  }
+
+  private all<T>(sql: string, ...params: unknown[]): T[] {
+    return this.db.prepare(sql).all(...params) as T[];
+  }
+
+  private run(sql: string, ...params: unknown[]): void {
+    this.db.prepare(sql).run(...params);
+  }
+
+  private mustGetPrompt(promptId: string): PromptRow {
+    const prompt = this.get<PromptRow>("SELECT * FROM prompts WHERE id = ?", promptId);
+    if (!prompt) throw new Error(`Prompt not found: ${promptId}`);
+    return prompt;
+  }
+
+  // ---------------------------------------------------------------- prompts
+
+  createPrompt(input: {
+    title: string;
+    description?: string;
+    icon?: string;
+    /** Existing tag ids to attach. */
+    tagIds?: string[];
+    /** Tag names to resolve or create inside the prompt transaction. */
+    tagNames?: string[];
+    /** Collection to attach atomically with the new prompt. */
+    collectionId?: string;
+    content: string;
+    changeNote?: string;
+    /** Optional first note, committed atomically with the prompt. */
+    initialNote?: string;
+  }): PromptRow {
+    if (!input.title.trim()) throw new Error("Prompt title must not be empty");
+    if (input.initialNote !== undefined && !input.initialNote.trim()) {
+      throw new Error("Note body must not be empty");
+    }
+    return this.db.transaction((): PromptRow => {
+      const tagIds = new Set(input.tagIds ?? []);
+      const tagsByName = new Map<string, string>();
+      for (const tag of this.all<TagRow>("SELECT * FROM tags ORDER BY rowid")) {
+        const key = tag.name.toLowerCase();
+        if (!tagsByName.has(key)) tagsByName.set(key, tag.id);
+      }
+      for (const name of input.tagNames ?? []) {
+        if (!name.trim()) throw new Error("Tag name must not be empty");
+        const key = name.toLowerCase();
+        let tagId = tagsByName.get(key);
+        if (!tagId) {
+          tagId = this.createTag({ name }).id;
+          tagsByName.set(key, tagId);
+        }
+        tagIds.add(tagId);
+      }
+
+      const ts = now();
+      const promptId = randomUUID();
+      this.run(
+        `INSERT INTO prompts (id, title, description, icon, is_starred, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+        promptId,
+        input.title,
+        input.description ?? null,
+        input.icon ?? null,
+        ts,
+        ts,
+      );
+
+      const branchId = randomUUID();
+      this.run(
+        `INSERT INTO branches (id, prompt_id, name, created_at) VALUES (?, ?, 'main', ?)`,
+        branchId,
+        promptId,
+        ts,
+      );
+
+      const versionId = randomUUID();
+      this.run(
+        `INSERT INTO versions (id, prompt_id, branch_id, parent_version_id, number, content, change_note, created_at)
+         VALUES (?, ?, ?, NULL, 1, ?, ?, ?)`,
+        versionId,
+        promptId,
+        branchId,
+        input.content,
+        input.changeNote ?? null,
+        ts,
+      );
+      this.run("UPDATE prompts SET current_version_id = ? WHERE id = ?", versionId, promptId);
+
+      for (const tagId of tagIds) {
+        this.run("INSERT INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
+      }
+
+      if (input.collectionId !== undefined) {
+        this.run(
+          "INSERT INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, 0)",
+          input.collectionId,
+          promptId,
+        );
+      }
+
+      if (input.initialNote !== undefined) {
+        this.run(
+          "INSERT INTO notes (id, prompt_id, version_id, body, created_at) VALUES (?, ?, NULL, ?, ?)",
+          randomUUID(),
+          promptId,
+          input.initialNote,
+          ts,
+        );
+      }
+
+      refreshPromptSearchMetadata(this.db, promptId, { newRow: true });
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
+      return this.mustGetPrompt(promptId);
+    })();
+  }
+
+  /** Creates a standalone prompt whose v1 copies one active source version. */
+  duplicatePrompt(input: { promptId: string; versionId: string; title: string }): PromptRow {
+    const sourcePrompt = this.mustGetPrompt(input.promptId);
+    const sourceVersion = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ? AND status = 'active'",
+      input.versionId,
+      input.promptId,
+    );
+    if (!sourceVersion) {
+      throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    }
+
+    return this.db.transaction((): PromptRow => {
+      const duplicate = this.createPrompt({
+        title: input.title,
+        description: sourcePrompt.description ?? undefined,
+        icon: sourcePrompt.icon ?? undefined,
+        tagIds: this.listTagsForPrompt(input.promptId).map((tag) => tag.id),
+        content: sourceVersion.content,
+      });
+      this.run(
+        "UPDATE versions SET content_format = ? WHERE id = ?",
+        sourceVersion.content_format,
+        duplicate.current_version_id,
+      );
+      for (const membership of this.all<{ collection_id: string; sort_order: number }>(
+        "SELECT collection_id, sort_order FROM collection_prompts WHERE prompt_id = ?",
+        input.promptId,
+      )) {
+        this.addPromptToCollection(membership.collection_id, duplicate.id, membership.sort_order);
+      }
+      return duplicate;
+    })();
+  }
+
+  getPrompt(promptId: string): PromptRow | null {
+    return this.get<PromptRow>("SELECT * FROM prompts WHERE id = ?", promptId) ?? null;
+  }
+
+  updatePromptMetadata(
+    promptId: string,
+    patch: { title?: string; description?: string | null; icon?: string | null },
+  ): PromptRow {
+    this.mustGetPrompt(promptId);
+    if (patch.title !== undefined && !patch.title.trim()) {
+      throw new Error("Prompt title must not be empty");
+    }
+    return this.db.transaction((): PromptRow => {
+      if (patch.title !== undefined) this.run("UPDATE prompts SET title = ? WHERE id = ?", patch.title, promptId);
+      if (patch.description !== undefined)
+        this.run("UPDATE prompts SET description = ? WHERE id = ?", patch.description, promptId);
+      if (patch.icon !== undefined) this.run("UPDATE prompts SET icon = ? WHERE id = ?", patch.icon, promptId);
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), promptId);
+      if (patch.title !== undefined || patch.description !== undefined) {
+        refreshPromptSearchMetadata(this.db, promptId);
+      }
+      return this.mustGetPrompt(promptId);
+    })();
+  }
+
+  listPrompts(options: ListPromptsOptions = {}): PromptRow[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (options.deletedOnly) {
+      where.push("p.deleted_at IS NOT NULL");
+    } else if (!options.includeDeleted) {
+      where.push("p.deleted_at IS NULL");
+    }
+    if (options.starred !== undefined) {
+      where.push("p.is_starred = ?");
+      params.push(options.starred ? 1 : 0);
+    }
+    if (options.collectionId) {
+      // Include the collection and all its descendants in the hierarchy.
+      const descendants = listDescendantCollectionIds(this.db, options.collectionId);
+      const placeholders = descendants.map(() => "?").join(", ");
+      where.push(
+        `EXISTS (SELECT 1 FROM collection_prompts cp WHERE cp.prompt_id = p.id AND cp.collection_id IN (${placeholders}))`,
+      );
+      params.push(...descendants);
+    }
+    if (options.tagIds && options.tagIds.length > 0) {
+      const placeholders = options.tagIds.map(() => "?").join(", ");
+      where.push(`EXISTS (SELECT 1 FROM prompt_tags pt WHERE pt.prompt_id = p.id AND pt.tag_id IN (${placeholders}))`);
+      params.push(...options.tagIds);
+    }
+
+    const sort = options.sort ?? "updated";
+    const orderBy: Record<PromptSort, string> = {
+      updated: "p.updated_at DESC",
+      created: "p.created_at DESC",
+      title: "p.title COLLATE NOCASE ASC",
+      rating: "avg_rating IS NULL, avg_rating DESC",
+    };
+
+    const whereClause = () => (where.length > 0 ? `WHERE ${where.join(" AND ")}` : "");
+    if (sort !== "rating" && options.minRating === undefined) {
+      return this.all<PromptRow>(
+        `SELECT p.* FROM prompts p ${whereClause()} ORDER BY ${orderBy[sort]}`,
+        ...params,
+      );
+    }
+
+    if (options.minRating !== undefined) {
+      where.push("ra.avg_rating >= ?");
+      params.push(options.minRating);
+    }
+    const sql = `
+      WITH rating_averages AS (
+        SELECT target_id,
+          (
+            TOTAL(effectiveness) + TOTAL(clarity) +
+            TOTAL(completeness) + TOTAL(actionability)
+          ) / NULLIF(
+            COUNT(effectiveness) + COUNT(clarity) +
+            COUNT(completeness) + COUNT(actionability),
+            0
+          ) AS avg_rating
+        FROM ratings
+        WHERE target_type = 'prompt'
+        GROUP BY target_id
+      )
+      SELECT p.*, ra.avg_rating
+      FROM prompts p
+      LEFT JOIN rating_averages ra ON ra.target_id = p.id
+      ${whereClause()}
+      ORDER BY ${orderBy[sort]}`;
+
+    type RowWithAvg = PromptRow & { avg_rating: number | null };
+    return this.all<RowWithAvg>(sql, ...params).map(({ avg_rating: _avg, ...row }) => row);
+  }
+
+  setStarred(promptId: string, starred: boolean): void {
+    const result = this.db
+      .prepare("UPDATE prompts SET is_starred = ? WHERE id = ?")
+      .run(starred ? 1 : 0, promptId);
+    if (result.changes === 0) throw new Error(`Prompt not found: ${promptId}`);
+  }
+
+  softDeletePrompt(promptId: string): void {
+    const result = this.db.prepare("UPDATE prompts SET deleted_at = ? WHERE id = ?").run(now(), promptId);
+    if (result.changes === 0) throw new Error(`Prompt not found: ${promptId}`);
+  }
+
+  restorePrompt(promptId: string): void {
+    const result = this.db.prepare("UPDATE prompts SET deleted_at = NULL WHERE id = ?").run(promptId);
+    if (result.changes === 0) throw new Error(`Prompt not found: ${promptId}`);
+  }
+
+  hardDeletePrompt(promptId: string): void {
+    this.mustGetPrompt(promptId);
+    this.db.transaction(() => {
+      deletePromptSearchRows(this.db, promptId);
+      this.run("DELETE FROM runs WHERE prompt_id = ?", promptId);
+      this.run("DELETE FROM notes WHERE prompt_id = ?", promptId);
+      // Ratings targeting versions have no FK — delete them explicitly, before
+      // the versions rows disappear, or they would be orphaned.
+      this.run(
+        `DELETE FROM ratings WHERE target_type = 'version'
+         AND target_id IN (SELECT id FROM versions WHERE prompt_id = ?)`,
+        promptId,
+      );
+      // Clear the FK pointer into versions before removing them.
+      this.run("UPDATE prompts SET current_version_id = NULL WHERE id = ?", promptId);
+      this.run("DELETE FROM versions WHERE prompt_id = ?", promptId);
+      this.run("DELETE FROM branches WHERE prompt_id = ?", promptId);
+      this.run("DELETE FROM prompt_tags WHERE prompt_id = ?", promptId);
+      this.run("DELETE FROM collection_prompts WHERE prompt_id = ?", promptId);
+      this.run("DELETE FROM ratings WHERE target_type = 'prompt' AND target_id = ?", promptId);
+      this.run("DELETE FROM prompts WHERE id = ?", promptId);
+    })();
+  }
+
+  // --------------------------------------------------------------- versions
+
+  createVersion(input: {
+    promptId: string;
+    branchId: string;
+    /** Exact active version being edited. Legacy callers omit this to use the branch head. */
+    baseVersionId?: string;
+    content: string;
+    changeNote?: string;
+    label?: string;
+    contentFormat?: string;
+  }): VersionRow {
+    const branch = this.get<BranchRow>(
+      "SELECT * FROM branches WHERE id = ? AND prompt_id = ?",
+      input.branchId,
+      input.promptId,
+    );
+    if (!branch) throw new Error(`Branch ${input.branchId} not found on prompt ${input.promptId}`);
+
+    return this.db.transaction((): VersionRow => {
+      let head = this.getBranchHead(input.branchId);
+      const prompt = this.mustGetPrompt(input.promptId);
+      const base =
+        input.baseVersionId !== undefined
+          ? this.get<VersionRow>(
+              "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+              input.baseVersionId,
+              input.promptId,
+            )
+          : head;
+      if (input.baseVersionId !== undefined && !base) {
+        throw new Error(`Version ${input.baseVersionId} not found on prompt ${input.promptId}`);
+      }
+      if (base && base.status !== "active") {
+        throw new Error(`Version ${base.id} is ${base.status} — only active versions can be edited`);
+      }
+      if (base && base.branch_id !== input.branchId) {
+        throw new Error(`Version ${base.id} is not on branch ${input.branchId}`);
+      }
+      const promotePreferred =
+        input.baseVersionId === undefined || prompt.current_version_id === base?.id;
+      if (
+        branch.name === "main" &&
+        head?.number === 1 &&
+        head.parent_version_id === null &&
+        head.source === "user" &&
+        head.content.length === 0 &&
+        prompt.current_version_id === head.id &&
+        base?.id === head.id &&
+        input.content.length > 0
+      ) {
+        const committedAt = now();
+        const initialized = this.db
+          .prepare(
+            `UPDATE versions
+             SET label = ?, content = ?, content_format = ?, change_note = ?, created_at = ?
+             WHERE id = ? AND content = ?`,
+          )
+          .run(
+            input.label ?? head.label,
+            input.content,
+            input.contentFormat ?? head.content_format,
+            input.changeNote ?? null,
+            committedAt,
+            head.id,
+            head.content,
+          );
+        if (initialized.changes === 1) {
+          // A title-only prompt starts with an empty v1 placeholder. Its first
+          // real save establishes v1; later save-as-new operations append.
+          this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", committedAt, input.promptId);
+          refreshVersionSearchRow(this.db, head.id);
+          return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", head.id)!;
+        }
+        // Another process may have initialized the placeholder after our read.
+        head = this.getBranchHead(input.branchId);
+      }
+      const versionId = randomUUID();
+      this.run(
+        `INSERT INTO versions
+           (id, prompt_id, branch_id, parent_version_id, number, label, content, content_format, change_note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        versionId,
+        input.promptId,
+        input.branchId,
+        base?.id ?? null,
+        (head?.number ?? 0) + 1,
+        input.label ?? null,
+        input.content,
+        input.contentFormat ?? "markdown",
+        input.changeNote ?? null,
+        now(),
+      );
+      if (promotePreferred) {
+        this.run(
+          "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
+          versionId,
+          now(),
+          input.promptId,
+        );
+      } else {
+        this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), input.promptId);
+      }
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
+      return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    }).immediate();
+  }
+
+  getVersion(versionId: string): VersionRow | null {
+    return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId) ?? null;
+  }
+
+  /** Updates the content of one active version without changing its identity or lineage. */
+  updateVersionContent(versionId: string, content: string): VersionRow {
+    return this.db.transaction((): VersionRow => {
+      const version = this.getVersion(versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "active") {
+        throw new Error(
+          `Version ${versionId} is ${version.status} — only active versions can be edited`,
+        );
+      }
+
+      // Runs created before exact prompt snapshots were introduced fall back
+      // to version content. Freeze that historical input before amending it.
+      this.run(
+        "UPDATE runs SET prompt_content = ? WHERE version_id = ? AND prompt_content IS NULL",
+        version.content,
+        versionId,
+      );
+      this.run("UPDATE versions SET content = ? WHERE id = ?", content, versionId);
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      refreshVersionSearchRow(this.db, versionId);
+      return this.getVersion(versionId)!;
+    }).immediate();
+  }
+
+  /** Permanently deletes one non-current version and its dependent execution data. */
+  deleteVersion(versionId: string): void {
+    this.db.transaction(() => {
+      const version = this.getVersion(versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "active") {
+        throw new Error(
+          `Version ${versionId} is ${version.status} — only active versions can be deleted`,
+        );
+      }
+      const prompt = this.mustGetPrompt(version.prompt_id);
+      if (prompt.current_version_id === versionId) {
+        throw new Error("The current version cannot be deleted");
+      }
+
+      this.run("DELETE FROM runs WHERE version_id = ?", versionId);
+      this.run("DELETE FROM ratings WHERE target_type = 'version' AND target_id = ?", versionId);
+      this.run("UPDATE notes SET version_id = NULL WHERE version_id = ?", versionId);
+      this.run(
+        `UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL
+         WHERE id = ? AND draft_base_version_id = ?`,
+        version.prompt_id,
+        versionId,
+      );
+      this.run("UPDATE versions SET parent_version_id = NULL WHERE parent_version_id = ?", versionId);
+      const deleted = this.db.prepare("DELETE FROM versions WHERE id = ?").run(versionId);
+      if (deleted.changes !== 1) throw new Error(`Version not found: ${versionId}`);
+
+      const remaining = this.all<{ id: string }>(
+        "SELECT id FROM versions WHERE branch_id = ? LIMIT 1",
+        version.branch_id,
+      );
+      if (remaining.length === 0) {
+        this.run("DELETE FROM branches WHERE id = ?", version.branch_id);
+        // A branch delete means subtree deletion to the sync engine. This
+        // branch removal is only cleanup derived from the version tombstone,
+        // so peers repeat it after applying that tombstone instead.
+        this.run(
+          "DELETE FROM sync_dirty WHERE table_name = 'branches' AND record_id = ?",
+          version.branch_id,
+        );
+      }
+
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      deleteVersionSearchRow(this.db, versionId);
+    }).immediate();
+  }
+
+  /** Sets a custom display label, or clears it to restore the automatic vN label. */
+  updateVersionLabel(versionId: string, label: string | null): VersionRow {
+    const version = this.getVersion(versionId);
+    if (!version) throw new Error(`Version not found: ${versionId}`);
+    return this.db.transaction((): VersionRow => {
+      this.run("UPDATE versions SET label = ? WHERE id = ?", label?.trim() || null, versionId);
+      this.run("UPDATE prompts SET updated_at = ? WHERE id = ?", now(), version.prompt_id);
+      return this.getVersion(versionId)!;
+    })();
+  }
+
+  /**
+   * Versions of a prompt, ordered by branch creation then per-branch number.
+   * By default only 'active' versions are returned; pass `includePending` to
+   * also see 'pending'/'rejected' agent suggestions.
+   */
+  listVersions(promptId: string, options: { includePending?: boolean } = {}): VersionWithBranch[] {
+    return this.all<VersionWithBranch>(
+      `SELECT v.*, b.name AS branch_name
+       FROM versions v JOIN branches b ON b.id = v.branch_id
+       WHERE v.prompt_id = ?${options.includePending ? "" : " AND v.status = 'active'"}
+       ORDER BY b.created_at ASC, b.name ASC, v.number ASC`,
+      promptId,
+    );
+  }
+
+  /** Latest (highest-numbered) active version on a branch, or null if none. */
+  getBranchHead(branchId: string): VersionRow | null {
+    return (
+      this.get<VersionRow>(
+        "SELECT * FROM versions WHERE branch_id = ? AND status = 'active' ORDER BY number DESC LIMIT 1",
+        branchId,
+      ) ?? null
+    );
+  }
+
+  /** Points the prompt's current version at an existing version (restore-as-current). */
+  setCurrentVersion(promptId: string, versionId: string): PromptRow {
+    const version = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+      versionId,
+      promptId,
+    );
+    if (!version) throw new Error(`Version ${versionId} not found on prompt ${promptId}`);
+    if (version.status !== "active") {
+      throw new Error(
+        `Version ${versionId} is ${version.status} — only active versions can be made current`,
+      );
+    }
+    this.run(
+      "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
+      versionId,
+      now(),
+      promptId,
+    );
+    return this.mustGetPrompt(promptId);
+  }
+
+  // --------------------------------------------------------------- branches
+
+  createBranch(input: {
+    promptId: string;
+    name: string;
+    fromVersionId: string;
+    description?: string;
+  }): { branch: BranchRow; version: VersionRow } {
+    if (!input.name.trim()) throw new Error("Branch name must not be empty");
+    const source = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+      input.fromVersionId,
+      input.promptId,
+    );
+    if (!source) throw new Error(`Version ${input.fromVersionId} not found on prompt ${input.promptId}`);
+    if (source.status !== "active") {
+      throw new Error(
+        `Version ${source.id} is ${source.status} — only active versions can start a variation`,
+      );
+    }
+    if (this.get<BranchRow>("SELECT * FROM branches WHERE prompt_id = ? AND name = ?", input.promptId, input.name)) {
+      throw new Error(`Branch "${input.name}" already exists on prompt ${input.promptId}`);
+    }
+
+    return this.db.transaction(() => {
+      const ts = now();
+      const branchId = randomUUID();
+      this.run(
+        "INSERT INTO branches (id, prompt_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        branchId,
+        input.promptId,
+        input.name,
+        input.description ?? null,
+        ts,
+      );
+      const versionId = randomUUID();
+      this.run(
+        `INSERT INTO versions
+           (id, prompt_id, branch_id, parent_version_id, number, content, content_format, change_note, created_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+        versionId,
+        input.promptId,
+        branchId,
+        input.fromVersionId,
+        source.content,
+        source.content_format,
+        `Branched from version ${source.number}`,
+        ts,
+      );
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
+      return {
+        branch: this.get<BranchRow>("SELECT * FROM branches WHERE id = ?", branchId)!,
+        version: this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!,
+      };
+    })();
+  }
+
+  listBranches(promptId: string): BranchRow[] {
+    return this.all<BranchRow>(
+      "SELECT * FROM branches WHERE prompt_id = ? ORDER BY created_at ASC, name ASC",
+      promptId,
+    );
+  }
+
+  // ------------------------------------------------------------ suggestions
+
+  /**
+   * Agent entry point: propose a variation of a prompt. Creates a new branch
+   * (default name `agent-YYYYMMDD-<shortid>`) rooted at `baseVersionId` with a
+   * single **pending** version holding the proposed content. Nothing becomes
+   * searchable, listable or current until a human approves it in the app.
+   */
+  suggestVariation(input: {
+    promptId: string;
+    baseVersionId: string;
+    newContent: string;
+    rationale: string;
+    source?: VersionSource;
+    branchName?: string;
+  }): { branch: BranchRow; version: VersionRow } {
+    this.mustGetPrompt(input.promptId);
+    const base = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+      input.baseVersionId,
+      input.promptId,
+    );
+    if (!base) throw new Error(`Version ${input.baseVersionId} not found on prompt ${input.promptId}`);
+    if (!input.newContent.trim()) throw new Error("Suggested content must not be empty");
+    if (!input.rationale.trim()) throw new Error("A rationale is required for a suggestion");
+    const source = input.source ?? "agent";
+
+    return this.db.transaction(() => {
+      const ts = now();
+      const branchName = input.branchName ?? this.freshAgentBranchName(input.promptId, ts);
+      if (this.get<BranchRow>("SELECT * FROM branches WHERE prompt_id = ? AND name = ?", input.promptId, branchName)) {
+        throw new Error(`Branch "${branchName}" already exists on prompt ${input.promptId}`);
+      }
+      const branchId = randomUUID();
+      this.run(
+        "INSERT INTO branches (id, prompt_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        branchId,
+        input.promptId,
+        branchName,
+        input.rationale,
+        ts,
+      );
+      const versionId = randomUUID();
+      this.run(
+        `INSERT INTO versions
+           (id, prompt_id, branch_id, parent_version_id, number, content, content_format, change_note, author, status, source, created_at)
+         VALUES (?, ?, ?, ?, 1, ?, 'markdown', ?, ?, 'pending', ?, ?)`,
+        versionId,
+        input.promptId,
+        branchId,
+        base.id,
+        input.newContent,
+        input.rationale,
+        source === "agent" ? "Agent" : "You",
+        source,
+        ts,
+      );
+      // Pending versions are deliberately NOT reindexed into FTS and do not
+      // move the current pointer or updated_at — they are invisible until approved.
+      return {
+        branch: this.get<BranchRow>("SELECT * FROM branches WHERE id = ?", branchId)!,
+        version: this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!,
+      };
+    })();
+  }
+
+  /** Generates a unique `agent-YYYYMMDD-<shortid>` branch name for a prompt. */
+  private freshAgentBranchName(promptId: string, ts: string): string {
+    const date = ts.slice(0, 10).replace(/-/g, "");
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const name = `agent-${date}-${randomUUID().slice(0, 8)}`;
+      if (!this.get<BranchRow>("SELECT id FROM branches WHERE prompt_id = ? AND name = ?", promptId, name)) {
+        return name;
+      }
+    }
+    throw new Error("Could not allocate a unique agent branch name");
+  }
+
+  /** All pending suggestions across the library, newest first. */
+  listSuggestions(): SuggestionItem[] {
+    return this.all<SuggestionItem>(
+      `SELECT v.*, b.name AS branch_name, p.title AS prompt_title
+       FROM versions v
+       JOIN branches b ON b.id = v.branch_id
+       JOIN prompts p ON p.id = v.prompt_id
+       WHERE v.status = 'pending'
+       ORDER BY v.created_at DESC, v.rowid DESC`,
+    );
+  }
+
+  /**
+   * Approves a pending suggestion: the version becomes active (searchable,
+   * listed, eligible as current). Optionally makes it the prompt's current
+   * version.
+   */
+  approveSuggestion(versionId: string, options: { setAsCurrent?: boolean } = {}): VersionRow {
+    return this.db.transaction((): VersionRow => {
+      const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "pending") {
+        throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be approved`);
+      }
+      this.run("UPDATE versions SET status = 'active' WHERE id = ?", versionId);
+      refreshVersionSearchRow(this.db, versionId, { newRow: true });
+      if (options.setAsCurrent) {
+        this.run(
+          "UPDATE prompts SET current_version_id = ?, updated_at = ? WHERE id = ?",
+          versionId,
+          now(),
+          version.prompt_id,
+        );
+      }
+      return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    }).immediate();
+  }
+
+  /** Rejects a pending suggestion: kept for history but permanently inactive. */
+  rejectSuggestion(versionId: string): VersionRow {
+    return this.db.transaction(() => {
+      const version = this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId);
+      if (!version) throw new Error(`Version not found: ${versionId}`);
+      if (version.status !== "pending") {
+        throw new Error(`Version ${versionId} is ${version.status} — only pending suggestions can be rejected`);
+      }
+      this.run("UPDATE versions SET status = 'rejected' WHERE id = ?", versionId);
+      deleteVersionSearchRow(this.db, versionId, { newRow: true });
+      return this.get<VersionRow>("SELECT * FROM versions WHERE id = ?", versionId)!;
+    }).immediate();
+  }
+
+  // ------------------------------------------------------------------ draft
+
+  setDraft(promptId: string, content: string | null, baseVersionId?: string): void {
+    const prompt = this.mustGetPrompt(promptId);
+    if (content === null) {
+      this.run(
+        "UPDATE prompts SET draft_content = NULL, draft_base_version_id = NULL WHERE id = ?",
+        promptId,
+      );
+      return;
+    }
+    const resolvedBaseId = baseVersionId ?? prompt.current_version_id;
+    const base = resolvedBaseId
+      ? this.get<VersionRow>(
+          "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+          resolvedBaseId,
+          promptId,
+        )
+      : null;
+    if (!base) {
+      throw new Error(`Version ${resolvedBaseId ?? "current"} not found on prompt ${promptId}`);
+    }
+    if (base.status !== "active") {
+      throw new Error(`Version ${base.id} is ${base.status} — only active versions can have drafts`);
+    }
+    this.run(
+      "UPDATE prompts SET draft_content = ?, draft_base_version_id = ? WHERE id = ?",
+      content,
+      base.id,
+      promptId,
+    );
+  }
+
+  getDraft(promptId: string): string | null {
+    return this.mustGetPrompt(promptId).draft_content;
+  }
+
+  // ------------------------------------------------------------------ notes
+
+  addNote(input: { promptId: string; versionId?: string; body: string }): NoteRow {
+    if (!input.body.trim()) throw new Error("Note body must not be empty");
+    if (input.versionId) {
+      const version = this.get<VersionRow>(
+        "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+        input.versionId,
+        input.promptId,
+      );
+      if (!version) throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    }
+    return this.db.transaction((): NoteRow => {
+      const id = randomUUID();
+      this.run(
+        "INSERT INTO notes (id, prompt_id, version_id, body, created_at) VALUES (?, ?, ?, ?, ?)",
+        id,
+        input.promptId,
+        input.versionId ?? null,
+        input.body,
+        now(),
+      );
+      refreshPromptSearchMetadata(this.db, input.promptId);
+      return this.get<NoteRow>("SELECT * FROM notes WHERE id = ?", id)!;
+    })();
+  }
+
+  listNotes(promptId: string, versionId?: string): NoteRow[] {
+    if (versionId) {
+      return this.all<NoteRow>(
+        "SELECT * FROM notes WHERE prompt_id = ? AND version_id = ? ORDER BY created_at ASC",
+        promptId,
+        versionId,
+      );
+    }
+    return this.all<NoteRow>("SELECT * FROM notes WHERE prompt_id = ? ORDER BY created_at ASC", promptId);
+  }
+
+  /**
+   * Permanently deletes one note. The prompt/version remain, search is
+   * reindexed, and the sync trigger records a tombstone for paired devices.
+   */
+  deleteNote(noteId: string): void {
+    const note = this.get<NoteRow>("SELECT * FROM notes WHERE id = ?", noteId);
+    if (!note) throw new Error(`Note not found: ${noteId}`);
+    this.db.transaction(() => {
+      this.run("DELETE FROM notes WHERE id = ?", noteId);
+      refreshPromptSearchMetadata(this.db, note.prompt_id);
+    })();
+  }
+
+  // ------------------------------------------------------------------- tags
+
+  createTag(input: { name: string; color?: string }): TagRow {
+    if (!input.name.trim()) throw new Error("Tag name must not be empty");
+    const id = randomUUID();
+    this.run("INSERT INTO tags (id, name, color) VALUES (?, ?, ?)", id, input.name, input.color ?? null);
+    return this.get<TagRow>("SELECT * FROM tags WHERE id = ?", id)!;
+  }
+
+  listTags(): Array<TagRow & { usage_count: number }> {
+    return this.all<TagRow & { usage_count: number }>(
+      `SELECT t.*, (SELECT COUNT(*) FROM prompt_tags pt WHERE pt.tag_id = t.id) AS usage_count
+       FROM tags t ORDER BY t.name COLLATE NOCASE ASC`,
+    );
+  }
+
+  addTagToPrompt(promptId: string, tagId: string): void {
+    this.mustGetPrompt(promptId);
+    this.db.transaction(() => {
+      this.run("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
+      refreshPromptSearchMetadata(this.db, promptId);
+    })();
+  }
+
+  /** Tags attached to one prompt. */
+  listTagsForPrompt(promptId: string): TagRow[] {
+    return this.all<TagRow>(
+      `SELECT t.* FROM tags t JOIN prompt_tags pt ON pt.tag_id = t.id
+       WHERE pt.prompt_id = ? ORDER BY t.name COLLATE NOCASE ASC`,
+      promptId,
+    );
+  }
+
+  removeTagFromPrompt(promptId: string, tagId: string): void {
+    this.db.transaction(() => {
+      this.run("DELETE FROM prompt_tags WHERE prompt_id = ? AND tag_id = ?", promptId, tagId);
+      refreshPromptSearchMetadata(this.db, promptId);
+    })();
+  }
+
+  /** Replaces the full tag set of a prompt. */
+  setPromptTags(promptId: string, tagIds: string[]): void {
+    this.mustGetPrompt(promptId);
+    this.db.transaction(() => {
+      this.run("DELETE FROM prompt_tags WHERE prompt_id = ?", promptId);
+      for (const tagId of tagIds) {
+        this.run("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)", promptId, tagId);
+      }
+      refreshPromptSearchMetadata(this.db, promptId);
+    })();
+  }
+
+  // ------------------------------------------------------------- collections
+
+  createCollection(input: { name: string; sortOrder?: number; parentCollectionId?: string | null }): CollectionRow {
+    if (!input.name.trim()) throw new Error("Collection name must not be empty");
+
+    // No cycle check needed: the collection is brand new so it cannot be its
+    // own ancestor. The FK constraint (ON DELETE CASCADE) prevents self-parenting.
+
+    const id = randomUUID();
+    // Manual ordering exists now, so a new folder belongs at the end of its
+    // sibling list instead of tying at zero and jumping above reordered rows.
+    // `IS ?` also matches NULL, unlike `= ?`.
+    const sortOrder =
+      input.sortOrder ??
+      this.get<{ next: number }>(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM collections WHERE parent_collection_id IS ?",
+        input.parentCollectionId ?? null,
+      )!.next;
+    this.run(
+      "INSERT INTO collections (id, name, sort_order, parent_collection_id) VALUES (?, ?, ?, ?)",
+      id,
+      input.name,
+      sortOrder,
+      input.parentCollectionId ?? null,
+    );
+    return this.get<CollectionRow>("SELECT * FROM collections WHERE id = ?", id)!;
+  }
+
+  listCollections(): Array<CollectionRow & { prompt_count: number }> {
+    return this.all<CollectionRow & { prompt_count: number }>(
+      `SELECT c.*, (SELECT COUNT(*) FROM collection_prompts cp WHERE cp.collection_id = c.id) AS prompt_count
+       FROM collections c ORDER BY c.sort_order ASC, c.name COLLATE NOCASE ASC`,
+    );
+  }
+
+  addPromptToCollection(collectionId: string, promptId: string, sortOrder = 0): void {
+    this.run(
+      "INSERT OR IGNORE INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, ?)",
+      collectionId,
+      promptId,
+      sortOrder,
+    );
+  }
+
+  removePromptFromCollection(collectionId: string, promptId: string): void {
+    this.run(
+      "DELETE FROM collection_prompts WHERE collection_id = ? AND prompt_id = ?",
+      collectionId,
+      promptId,
+    );
+  }
+
+  /** Ids of the collections a prompt belongs to. */
+  listCollectionIdsForPrompt(promptId: string): string[] {
+    return this.all<{ collection_id: string }>(
+      "SELECT collection_id FROM collection_prompts WHERE prompt_id = ? ORDER BY sort_order ASC",
+      promptId,
+    ).map((row) => row.collection_id);
+  }
+
+  /** Direct children of a parent (null = top-level). */
+  listCollectionsByParent(parentId: string | null = null): CollectionRow[] {
+    return parentId === null
+      ? this.all<CollectionRow>(
+          `SELECT * FROM collections WHERE parent_collection_id IS NULL ORDER BY sort_order ASC, name COLLATE NOCASE ASC`,
+        )
+      : this.all<CollectionRow>(
+          `SELECT * FROM collections WHERE parent_collection_id = ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC`,
+          parentId,
+        );
+  }
+
+  /**
+   * Build the full folder tree with prompt counts and nested children.
+   * Top-level node has `id = null` and `parent_collection_id = null`.
+   */
+  getCollectionTree(): CollectionTreeItem {
+    const all = this.all<CollectionRow>(
+      `SELECT * FROM collections ORDER BY sort_order ASC, name COLLATE NOCASE ASC`,
+    );
+
+    // Build a map from id → tree node.
+    const nodeMap = new Map<string, CollectionTreeItem>();
+    for (const row of all) {
+      nodeMap.set(row.id, {
+        ...row,
+        children: [],
+        promptCount: 0,
+      });
+    }
+
+    // Root sentinel.
+    const root: CollectionTreeItem = {
+      id: "root",
+      name: "",
+      sort_order: 0,
+      parent_collection_id: null,
+      children: [],
+      promptCount: 0,
+    };
+
+    // Attach each node under its parent (or root if no parent).
+    for (const row of all) {
+      const node = nodeMap.get(row.id)!;
+      const parent = row.parent_collection_id
+        ? nodeMap.get(row.parent_collection_id)
+        : undefined;
+      (parent ?? root).children.push(node);
+    }
+
+    // Bottom-up prompt count: each node counts its own direct prompts
+    // plus all descendant counts, fetched from the database.
+    const countQuery = this.db.prepare<string, { total: number }>(
+      `WITH RECURSIVE descendants(id) AS (
+         SELECT ? UNION ALL
+         SELECT c.id FROM collections c INNER JOIN descendants d ON c.parent_collection_id = d.id
+       )
+       SELECT COUNT(DISTINCT cp.prompt_id) AS total
+       FROM collection_prompts cp INNER JOIN descendants d ON cp.collection_id = d.id`,
+    );
+
+    // Fetch all collection IDs for the root node (which uses id="root" sentinel).
+    const allCollectionIds = all.map((c) => c.id);
+
+    // Pre-build the root-level count query once.
+    const rootCountSql = allCollectionIds.length > 0
+      ? `SELECT COUNT(DISTINCT cp.prompt_id) AS total FROM collection_prompts cp WHERE cp.collection_id IN (${allCollectionIds.map(() => "?").join(", ")})`
+      : "SELECT 0 AS total";
+    const rootCountQuery = this.db.prepare(rootCountSql);
+
+    function setCounts(node: CollectionTreeItem): void {
+      if (node.id === "root") {
+        // Root node counts ALL prompts across all collections.
+        const row = rootCountQuery.get(...allCollectionIds) as { total: number } | undefined;
+        node.promptCount = row?.total ?? 0;
+      } else {
+        node.promptCount = countQuery.get(node.id)?.total ?? 0;
+      }
+      for (const child of node.children) setCounts(child);
+    }
+
+    setCounts(root);
+    return root;
+  }
+
+  /**
+   * Update a collection's name, parent, or sort order. Validates that the
+   * new parent is not a descendant of the collection being updated.
+   */
+  updateCollection(id: string, patch: UpdateCollectionInput): CollectionRow {
+    this.mustGetCollection(id);
+
+    // Guard against cycles: new parent must not be a descendant of id.
+    if (patch.parentCollectionId !== undefined && patch.parentCollectionId !== null) {
+      const descendants = listDescendantCollectionIds(this.db, id);
+      if (descendants.includes(patch.parentCollectionId)) {
+        throw new Error("A collection cannot be moved under one of its descendants");
+      }
+    }
+
+    const updates: string[] = [];
+    const params: unknown[] = [];
+
+    if (patch.name !== undefined) {
+      updates.push("name = ?");
+      params.push(patch.name);
+    }
+    if (patch.parentCollectionId !== undefined) {
+      updates.push("parent_collection_id = ?");
+      params.push(patch.parentCollectionId ?? null);
+    }
+    if (patch.sortOrder !== undefined) {
+      updates.push("sort_order = ?");
+      params.push(patch.sortOrder);
+    }
+
+    if (updates.length === 0) return this.mustGetCollection(id);
+
+    params.push(id);
+    this.run(`UPDATE collections SET ${updates.join(", ")} WHERE id = ?`, ...params);
+    return this.mustGetCollection(id);
+  }
+
+  /**
+   * Move a collection to a new parent and/or sibling position in one
+   * transaction. `targetIndex` is the insertion index among the target
+   * folder's children with the moved collection itself excluded (the same
+   * coordinate space the drag-and-drop UI uses); out-of-range values clamp to
+   * the end. Nothing is written when the move is a no-op, which keeps manual
+   * ordering from generating sync traffic for accidental drops.
+   */
+  moveCollection(input: {
+    id: string;
+    parentCollectionId: string | null;
+    targetIndex: number;
+  }): void {
+    const collection = this.mustGetCollection(input.id);
+
+    if (input.parentCollectionId !== null) {
+      this.mustGetCollection(input.parentCollectionId);
+      const descendants = listDescendantCollectionIds(this.db, input.id);
+      if (descendants.includes(input.parentCollectionId)) {
+        throw new Error("A collection cannot be moved under one of its descendants");
+      }
+    }
+
+    const siblings = this.listCollectionsByParent(input.parentCollectionId).filter(
+      (row) => row.id !== input.id,
+    );
+    const index = Math.max(0, Math.min(input.targetIndex, siblings.length));
+    const ordered = [
+      ...siblings.slice(0, index).map((row) => row.id),
+      input.id,
+      ...siblings.slice(index).map((row) => row.id),
+    ];
+
+    const parentChanged = collection.parent_collection_id !== input.parentCollectionId;
+    const orderChanged =
+      parentChanged ||
+      this.listCollectionsByParent(input.parentCollectionId).some(
+        (row, position) => row.id !== ordered[position],
+      );
+    if (!orderChanged) return;
+
+    this.db.transaction(() => {
+      if (parentChanged) {
+        this.run(
+          "UPDATE collections SET parent_collection_id = ? WHERE id = ?",
+          input.parentCollectionId,
+          input.id,
+        );
+      }
+      const setOrder = this.db.prepare("UPDATE collections SET sort_order = ? WHERE id = ?");
+      ordered.forEach((id, position) => setOrder.run(position, id));
+    })();
+  }
+
+  /**
+   * Delete a collection and all its descendants. Prompts that were in
+   * deleted collections are NOT moved — they simply lose that collection
+   * membership.  This is intentional: the desktop app will need a separate
+   * "reassign prompts" flow if that is desired.
+   */
+  deleteCollection(id: string): void {
+    this.mustGetCollection(id);
+
+    // Collect all descendant ids (including self).
+    const descendants = listDescendantCollectionIds(this.db, id);
+
+    // Remove collection_prompts for all affected collections.
+    if (descendants.length > 0) {
+      const placeholders = descendants.map(() => "?").join(", ");
+      this.run(`DELETE FROM collection_prompts WHERE collection_id IN (${placeholders})`, ...descendants);
+    }
+
+    // Remove from search index metadata (prompts that only lived in deleted
+    // collections lose that tag-like metadata).
+    // Note: prompts are not deleted — they keep their other collections and
+    // tags; only the collection association is lost.
+
+    // Delete all descendant collections (cascade handles children via FK,
+    // but we delete explicitly for clarity and to trigger any triggers).
+    const deleteStmt = this.db.prepare("DELETE FROM collections WHERE id = ?");
+    for (const descId of descendants) {
+      deleteStmt.run(descId);
+    }
+  }
+
+  /**
+   * Returns the full breadcrumb path from root to the given collection
+   * (inclusive). Throws if the collection does not exist.
+   */
+  getCollectionPath(collectionId: string): CollectionBreadcrumb[] {
+    this.mustGetCollection(collectionId);
+
+    const rows = this.all<{ id: string; name: string; parent_collection_id: string | null }>(
+      `WITH RECURSIVE ancestor(id, parent_collection_id, depth) AS (
+         SELECT id, parent_collection_id, 0 AS depth FROM collections WHERE id = ?
+         UNION ALL
+         SELECT c.id, c.parent_collection_id, ancestor.depth + 1
+         FROM ancestor INNER JOIN collections c ON c.id = ancestor.parent_collection_id
+       )
+       SELECT c.id, c.name, c.parent_collection_id
+       FROM ancestor a JOIN collections c ON c.id = a.id
+       ORDER BY a.depth DESC`,
+      collectionId,
+    );
+
+    if (rows.length === 0) throw new Error(`Collection not found: ${collectionId}`);
+    return rows;
+  }
+
+  private mustGetCollection(id: string): CollectionRow {
+    const row = this.get<CollectionRow>("SELECT * FROM collections WHERE id = ?", id);
+    if (!row) throw new Error(`Collection not found: ${id}`);
+    return row;
+  }
+
+  // -------------------------------------------------------------- settings
+
+  getSetting(key: string): string | null {
+    const row = this.get<SettingRow>("SELECT * FROM settings WHERE key = ?", key);
+    return row?.value ?? null;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.run(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      key,
+      value,
+    );
+  }
+
+  /**
+   * Active versions of the prompt's default branch ('main', falling back to
+   * the earliest-created branch), oldest first — the history included in a
+   * full-history snapshot publish.
+   */
+  listDefaultBranchVersions(promptId: string): VersionRow[] {
+    const branches = this.listBranches(promptId);
+    const branch = branches.find((b) => b.name === "main") ?? branches[0];
+    if (!branch) return [];
+    return this.all<VersionRow>(
+      `SELECT * FROM versions
+       WHERE prompt_id = ? AND branch_id = ? AND status = 'active'
+       ORDER BY number ASC`,
+      promptId,
+      branch.id,
+    );
+  }
+
+  // --------------------------------------------------------------- activity
+
+  /**
+   * Global activity feed: most recently created versions across all prompts
+   * (including soft-deleted ones), newest first.
+   */
+  listRecentActivity(limit = 50): ActivityItem[] {
+    return this.all<ActivityItem>(
+      `SELECT v.prompt_id, p.title AS prompt_title, v.id AS version_id,
+              v.number, v.label, b.name AS branch_name, v.change_note, v.created_at
+       FROM versions v
+       JOIN prompts p ON p.id = v.prompt_id
+       JOIN branches b ON b.id = v.branch_id
+       WHERE v.status = 'active'
+       ORDER BY v.created_at DESC, v.rowid DESC
+       LIMIT ?`,
+      limit,
+    );
+  }
+
+  // ---------------------------------------------------------------- ratings
+
+  addRating(
+    input: {
+      targetType: RatingTargetType;
+      targetId: string;
+    } & Partial<Record<RatingDimension, number>>,
+  ): RatingRow {
+    const scores = RATING_DIMENSIONS.map((d) => input[d]).filter((v): v is number => v !== undefined);
+    if (scores.length === 0) throw new Error("Rating requires at least one dimension score");
+    for (const score of scores) {
+      if (score < 1 || score > 5) {
+        throw new Error(`Rating scores must be between 1 and 5, got ${score}`);
+      }
+    }
+    const id = randomUUID();
+    this.run(
+      `INSERT INTO ratings (id, target_type, target_id, effectiveness, clarity, completeness, actionability, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      input.targetType,
+      input.targetId,
+      input.effectiveness ?? null,
+      input.clarity ?? null,
+      input.completeness ?? null,
+      input.actionability ?? null,
+      now(),
+    );
+    return this.get<RatingRow>("SELECT * FROM ratings WHERE id = ?", id)!;
+  }
+
+  getLatestRating(targetType: RatingTargetType, targetId: string): RatingRow | null {
+    return (
+      this.get<RatingRow>(
+        "SELECT * FROM ratings WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        targetType,
+        targetId,
+      ) ?? null
+    );
+  }
+
+  getAverageRatings(targetType: RatingTargetType, targetId: string): AverageRatings {
+    const perDimension = this.get<{
+      effectiveness: number | null;
+      clarity: number | null;
+      completeness: number | null;
+      actionability: number | null;
+      count: number;
+    }>(
+      `SELECT AVG(effectiveness) AS effectiveness, AVG(clarity) AS clarity,
+              AVG(completeness) AS completeness, AVG(actionability) AS actionability,
+              COUNT(*) AS count
+       FROM ratings WHERE target_type = ? AND target_id = ?`,
+      targetType,
+      targetId,
+    )!;
+    const overall = this.get<{ overall: number | null }>(
+      `SELECT AVG(val) AS overall FROM (
+         SELECT effectiveness AS val FROM ratings WHERE target_type = ? AND target_id = ? AND effectiveness IS NOT NULL
+         UNION ALL
+         SELECT clarity FROM ratings WHERE target_type = ? AND target_id = ? AND clarity IS NOT NULL
+         UNION ALL
+         SELECT completeness FROM ratings WHERE target_type = ? AND target_id = ? AND completeness IS NOT NULL
+         UNION ALL
+         SELECT actionability FROM ratings WHERE target_type = ? AND target_id = ? AND actionability IS NOT NULL
+       )`,
+      targetType,
+      targetId,
+      targetType,
+      targetId,
+      targetType,
+      targetId,
+      targetType,
+      targetId,
+    )!;
+    return { ...perDimension, overall: overall.overall };
+  }
+
+  /** Average ratings per version of a prompt, for versions that have ratings. */
+  getVersionRatingSummaries(promptId: string): Array<AverageRatings & { version_id: string }> {
+    return this.all<AverageRatings & { version_id: string }>(
+      `SELECT v.id AS version_id,
+              AVG(r.effectiveness) AS effectiveness,
+              AVG(r.clarity) AS clarity,
+              AVG(r.completeness) AS completeness,
+              AVG(r.actionability) AS actionability,
+              COUNT(*) AS count,
+              (TOTAL(r.effectiveness) + TOTAL(r.clarity) + TOTAL(r.completeness) +
+               TOTAL(r.actionability)) /
+              NULLIF(COUNT(r.effectiveness) + COUNT(r.clarity) + COUNT(r.completeness) +
+                     COUNT(r.actionability), 0) AS overall
+       FROM versions AS v
+       JOIN ratings AS r ON r.target_type = 'version' AND r.target_id = v.id
+       WHERE v.prompt_id = ?
+       GROUP BY v.id`,
+      promptId,
+    );
+  }
+
+  // ------------------------------------------------------------------- runs
+
+  addRun(input: {
+    promptId: string;
+    versionId: string;
+    tool?: string;
+    model?: string;
+    provider?: string;
+    status?: RunStatus;
+    output?: string;
+    promptContent?: string;
+    error?: string;
+    latencyMs?: number;
+    runGroupId?: string;
+    outcomeRating?: number;
+    resultSummary?: string;
+    metrics?: Record<string, unknown>;
+    startedAt?: string;
+  }): RunRow {
+    if (input.outcomeRating !== undefined && (input.outcomeRating < 1 || input.outcomeRating > 5)) {
+      throw new Error(`Outcome rating must be between 1 and 5, got ${input.outcomeRating}`);
+    }
+    if (input.status !== undefined && input.status !== "completed" && input.status !== "error") {
+      throw new Error(`Run status must be 'completed' or 'error', got ${input.status}`);
+    }
+    const version = this.get<VersionRow>(
+      "SELECT * FROM versions WHERE id = ? AND prompt_id = ?",
+      input.versionId,
+      input.promptId,
+    );
+    if (!version) throw new Error(`Version ${input.versionId} not found on prompt ${input.promptId}`);
+    if (version.status !== "active") throw new Error(`Version ${input.versionId} must be active to record a run`);
+    const id = randomUUID();
+    this.run(
+      `INSERT INTO runs
+         (id, prompt_id, version_id, tool, model, provider, status, output, prompt_content, error,
+          latency_ms, run_group_id, outcome_rating, result_summary, metrics_json, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      input.promptId,
+      input.versionId,
+      input.tool ?? "manual",
+      input.model ?? null,
+      input.provider ?? null,
+      input.status ?? "completed",
+      input.output ?? null,
+      input.promptContent ?? null,
+      input.error ?? null,
+      input.latencyMs ?? null,
+      input.runGroupId ?? null,
+      input.outcomeRating ?? null,
+      input.resultSummary ?? null,
+      input.metrics !== undefined ? JSON.stringify(input.metrics) : null,
+      input.startedAt ?? null,
+      now(),
+    );
+    return this.get<RunRow>("SELECT * FROM runs WHERE id = ?", id)!;
+  }
+
+  /**
+   * Records one executed model run (tool 'prompt-run'). Status drives the
+   * output/error contract: completed runs carry output, error runs carry the
+   * normalized error message.
+   */
+  recordModelRun(input: {
+    promptId: string;
+    versionId: string;
+    provider: string;
+    model: string;
+    status: RunStatus;
+    output?: string;
+    promptContent?: string;
+    error?: string;
+    latencyMs?: number;
+    runGroupId?: string;
+    metrics?: Record<string, unknown>;
+    startedAt?: string;
+  }): RunRow {
+    if (input.status === "completed" && input.output === undefined) {
+      throw new Error("Completed runs must carry their output");
+    }
+    if (input.status === "error" && !input.error?.trim()) {
+      throw new Error("Failed runs must carry an error message");
+    }
+    const resultSummary =
+      input.status === "completed" && input.output !== undefined
+        ? input.output.replace(/\s+/g, " ").trim().slice(0, 280) || undefined
+        : undefined;
+    const metrics =
+      input.promptContent !== undefined
+        ? { ...(input.metrics ?? {}), promptContentCaptured: true }
+        : input.metrics;
+    return this.addRun({
+      ...input,
+      tool: "prompt-run",
+      ...(metrics !== undefined ? { metrics } : {}),
+      ...(resultSummary !== undefined ? { resultSummary } : {}),
+    });
+  }
+
+  listRuns(promptId: string, options: { runGroupId?: string } = {}): RunRow[] {
+    if (options.runGroupId !== undefined) {
+      return this.all<RunRow>(
+        "SELECT * FROM runs WHERE prompt_id = ? AND run_group_id = ? ORDER BY created_at DESC, rowid DESC",
+        promptId,
+        options.runGroupId,
+      );
+    }
+    return this.all<RunRow>(
+      "SELECT * FROM runs WHERE prompt_id = ? ORDER BY created_at DESC, rowid DESC",
+      promptId,
+    );
+  }
+
+  /**
+   * Permanently deletes one run result, including its rating and metrics.
+   * Run groups are implicit: the group disappears after its last row is
+   * deleted. Notes previously saved from an output are independent rows.
+   */
+  deleteRun(runId: string): void {
+    const result = this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
+    if (result.changes === 0) throw new Error(`Run not found: ${runId}`);
+  }
+
+  /** Sets (or clears, with null) the outcome rating of a single run. */
+  updateRunOutcome(runId: string, outcomeRating: number | null): RunRow {
+    if (outcomeRating !== null && (outcomeRating < 1 || outcomeRating > 5)) {
+      throw new Error(`Outcome rating must be between 1 and 5, got ${outcomeRating}`);
+    }
+    const result = this.db
+      .prepare("UPDATE runs SET outcome_rating = ? WHERE id = ?")
+      .run(outcomeRating, runId);
+    if (result.changes === 0) throw new Error(`Run not found: ${runId}`);
+    return this.get<RunRow>("SELECT * FROM runs WHERE id = ?", runId)!;
+  }
+
+  /**
+   * Shallow-merges `patch` into a run's metrics_json blob. Existing keys not
+   * named in the patch (usage, costUsd, …) are preserved; a corrupt stored
+   * blob is treated as empty. Values must be JSON-serializable. The reserved
+   * execution keys `usage`/`costUsd`/`promptContentCaptured` are owned by
+   * recordModelRun — patches
+   * containing them are rejected so callers can't rewrite execution facts.
+   */
+  updateRunMetrics(runId: string, patch: Record<string, unknown>): RunRow {
+    for (const key of Object.keys(patch)) {
+      if (RESERVED_METRICS_KEYS.has(key)) {
+        throw new Error(`metrics_json key "${key}" is reserved and cannot be patched`);
+      }
+    }
+    const row = this.get<RunRow>("SELECT * FROM runs WHERE id = ?", runId);
+    if (!row) throw new Error(`Run not found: ${runId}`);
+    let current: Record<string, unknown> = {};
+    if (row.metrics_json !== null) {
+      try {
+        const parsed: unknown = JSON.parse(row.metrics_json);
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          current = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Corrupt blob — start from an empty object rather than throwing.
+      }
+    }
+    const merged = JSON.stringify({ ...current, ...patch });
+    this.db.prepare("UPDATE runs SET metrics_json = ? WHERE id = ?").run(merged, runId);
+    return this.get<RunRow>("SELECT * FROM runs WHERE id = ?", runId)!;
+  }
+
+  /** All runs of one run group, in creation order; empty when unknown. */
+  listRunGroupRuns(runGroupId: string): RunRow[] {
+    return this.all<RunRow>(
+      "SELECT * FROM runs WHERE run_group_id = ? ORDER BY created_at ASC, rowid ASC",
+      runGroupId,
+    );
+  }
+
+  /**
+   * Multi-model executions of a prompt, grouped by run_group_id (newest group
+   * first, runs in creation order). Provider names are joined when the
+   * provider row still exists; deleted providers leave provider_name null.
+   */
+  listRunGroups(promptId: string): RunGroup[] {
+    const rows = this.all<RunRow & { provider_name: string | null }>(
+      `SELECT r.*, p.name AS provider_name
+       FROM runs r LEFT JOIN providers p ON p.id = r.provider
+       WHERE r.prompt_id = ? AND r.run_group_id IS NOT NULL
+       ORDER BY r.created_at DESC, r.rowid DESC`,
+      promptId,
+    );
+    const groups = new Map<string, RunGroup>();
+    // Rows arrive newest-first; unshift so each group's runs end up in
+    // creation order and the first row seen sets the group's timestamp.
+    for (const { provider_name, ...row } of rows) {
+      let group = groups.get(row.run_group_id!);
+      if (!group) {
+        group = { runGroupId: row.run_group_id!, createdAt: row.created_at, runs: [] };
+        groups.set(row.run_group_id!, group);
+      }
+      group.runs.unshift({
+        id: row.id,
+        versionId: row.version_id,
+        provider: row.provider,
+        providerName: provider_name,
+        model: row.model,
+        status: row.status,
+        outcomeRating: row.outcome_rating,
+        output: row.output,
+        error: row.error,
+        latencyMs: row.latency_ms,
+        ...parseRunMetrics(row.metrics_json),
+        createdAt: row.created_at,
+      });
+      if (row.created_at > group.createdAt) group.createdAt = row.created_at;
+    }
+    return [...groups.values()];
+  }
+
+  // -------------------------------------------------------------- providers
+
+  createProvider(input: {
+    type: string;
+    name: string;
+    /** Execution driver; defaults to `type` (valid for the four native ids). */
+    driver?: string;
+    /** Opaque encrypted key blob; encryption happens in the desktop main process. */
+    apiKeyEnc?: string;
+    baseUrl?: string;
+    enabled?: boolean;
+  }): ProviderRow {
+    if (!input.type.trim()) throw new Error("Provider type must not be empty");
+    if (!input.name.trim()) throw new Error("Provider name must not be empty");
+    const id = randomUUID();
+    this.run(
+      "INSERT INTO providers (id, type, driver, name, api_key_enc, base_url, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      id,
+      input.type,
+      input.driver ?? input.type,
+      input.name,
+      input.apiKeyEnc ?? null,
+      input.baseUrl ?? null,
+      input.enabled === false ? 0 : 1,
+      now(),
+    );
+    return this.get<ProviderRow>("SELECT * FROM providers WHERE id = ?", id)!;
+  }
+
+  getProvider(providerId: string): ProviderRow | null {
+    return this.get<ProviderRow>("SELECT * FROM providers WHERE id = ?", providerId) ?? null;
+  }
+
+  /** All providers, newest last. The api_key_enc blob travels as-is (opaque). */
+  listProviders(): ProviderRow[] {
+    return this.all<ProviderRow>("SELECT * FROM providers ORDER BY created_at ASC, rowid ASC");
+  }
+
+  updateProvider(
+    providerId: string,
+    patch: {
+      name?: string;
+      apiKeyEnc?: string | null;
+      baseUrl?: string | null;
+      enabled?: boolean;
+    },
+  ): ProviderRow {
+    const existing = this.getProvider(providerId);
+    if (!existing) throw new Error(`Provider not found: ${providerId}`);
+    if (patch.name !== undefined && !patch.name.trim()) {
+      throw new Error("Provider name must not be empty");
+    }
+    if (patch.name !== undefined) this.run("UPDATE providers SET name = ? WHERE id = ?", patch.name, providerId);
+    if (patch.apiKeyEnc !== undefined)
+      this.run("UPDATE providers SET api_key_enc = ? WHERE id = ?", patch.apiKeyEnc, providerId);
+    if (patch.baseUrl !== undefined)
+      this.run("UPDATE providers SET base_url = ? WHERE id = ?", patch.baseUrl, providerId);
+    if (patch.enabled !== undefined)
+      this.run("UPDATE providers SET enabled = ? WHERE id = ?", patch.enabled ? 1 : 0, providerId);
+    return this.getProvider(providerId)!;
+  }
+
+  /**
+   * Deletes a provider and its configured models. Runs are deliberately NOT
+   * touched — they are history, and their provider column simply stops
+   * resolving to a row.
+   */
+  deleteProvider(providerId: string): void {
+    this.db.transaction(() => {
+      this.run("DELETE FROM provider_models WHERE provider_id = ?", providerId);
+      const result = this.db.prepare("DELETE FROM providers WHERE id = ?").run(providerId);
+      if (result.changes === 0) throw new Error(`Provider not found: ${providerId}`);
+    })();
+  }
+
+  /** Replaces the full configured model set of a provider. */
+  setProviderModels(
+    providerId: string,
+    models: Array<{ modelId: string; displayName?: string; enabled?: boolean }>,
+  ): void {
+    if (!this.getProvider(providerId)) throw new Error(`Provider not found: ${providerId}`);
+    for (const model of models) {
+      if (!model.modelId.trim()) throw new Error("Model id must not be empty");
+    }
+    this.db.transaction(() => {
+      this.run("DELETE FROM provider_models WHERE provider_id = ?", providerId);
+      for (const model of models) {
+        this.run(
+          "INSERT INTO provider_models (provider_id, model_id, display_name, enabled) VALUES (?, ?, ?, ?)",
+          providerId,
+          model.modelId,
+          model.displayName ?? null,
+          model.enabled === false ? 0 : 1,
+        );
+      }
+    })();
+  }
+
+  listProviderModels(providerId: string, options: { enabledOnly?: boolean } = {}): ProviderModelRow[] {
+    return this.all<ProviderModelRow>(
+      `SELECT * FROM provider_models WHERE provider_id = ?${options.enabledOnly ? " AND enabled = 1" : ""}
+       ORDER BY model_id ASC`,
+      providerId,
+    );
+  }
+
+  // ----------------------------------------------------------- catalog cache
+
+  /**
+   * Reads the cached models.dev catalog payload from settings, or null when
+   * never fetched. `json` is the raw stringified catalog; parsing is the
+   * caller's job (packages/ai).
+   */
+  getCatalogCache(): { fetchedAt: string; json: string } | null {
+    const row = this.get<SettingRow>("SELECT * FROM settings WHERE key = ?", MODEL_CATALOG_SETTING);
+    if (!row) return null;
+    try {
+      const parsed = JSON.parse(row.value) as { fetchedAt?: unknown; json?: unknown };
+      if (typeof parsed.fetchedAt === "string" && typeof parsed.json === "string") {
+        return { fetchedAt: parsed.fetchedAt, json: parsed.json };
+      }
+    } catch {
+      // Corrupted cache row — treat as absent.
+    }
+    return null;
+  }
+
+  /** Whether the current cache came from a models.dev refresh in this build. */
+  isCatalogCacheCredentialTrusted(): boolean {
+    return this.getSetting(MODEL_CATALOG_CREDENTIAL_TRUST_SETTING) === "1";
+  }
+
+  /** Stores the parsed catalog and its narrower authority over environment-key lookup. */
+  setCatalogCache(json: string, options: { credentialTrusted?: boolean } = {}): void {
+    this.db.transaction(() => {
+      this.run(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        MODEL_CATALOG_SETTING,
+        JSON.stringify({ fetchedAt: now(), json }),
+      );
+      if (options.credentialTrusted === true) {
+        this.run(
+          "INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          MODEL_CATALOG_CREDENTIAL_TRUST_SETTING,
+        );
+      } else {
+        this.run("DELETE FROM settings WHERE key = ?", MODEL_CATALOG_CREDENTIAL_TRUST_SETTING);
+      }
+    })();
+  }
+
+  // ----------------------------------------------------------------- search
+
+  /**
+   * Full-text search over title, description, tag names, note bodies and
+   * version content. Tokens are matched as prefixes (porter-stemmed). Results
+   * are ranked by bm25 (best first).
+   */
+  search(query: string, filters: SearchFilters = {}): SearchResult[] {
+    const match = buildMatchQuery(query);
+    if (!match) return [];
+
+    const where = ["search_index MATCH ?", "p.deleted_at IS NULL"];
+    const params: unknown[] = [match];
+
+    if (filters.starred !== undefined) {
+      where.push("p.is_starred = ?");
+      params.push(filters.starred ? 1 : 0);
+    }
+    if (filters.collectionId) {
+      const descendants = listDescendantCollectionIds(this.db, filters.collectionId);
+      const placeholders = descendants.map(() => "?").join(", ");
+      where.push(
+        `EXISTS (SELECT 1 FROM collection_prompts cp WHERE cp.prompt_id = p.id AND cp.collection_id IN (${placeholders}))`,
+      );
+      params.push(...descendants);
+    }
+    if (filters.tagIds && filters.tagIds.length > 0) {
+      const placeholders = filters.tagIds.map(() => "?").join(", ");
+      where.push(
+        `EXISTS (SELECT 1 FROM prompt_tags pt WHERE pt.prompt_id = p.id AND pt.tag_id IN (${placeholders}))`,
+      );
+      params.push(...filters.tagIds);
+    }
+
+    interface RawRow {
+      prompt_id: string;
+      version_id: string | null;
+      title: string;
+      snippet: string;
+      rank: number;
+    }
+    const rows = this.all<RawRow>(
+      `SELECT s.prompt_id, s.version_id, p.title,
+              snippet(search_index, -1, '', '', '…', 24) AS snippet,
+              bm25(search_index) AS rank
+       FROM search_index s JOIN prompts p ON p.id = s.prompt_id
+       WHERE ${where.join(" AND ")}
+       ORDER BY rank ASC`,
+      ...params,
+    );
+    return rows.map((row) => ({
+      promptId: row.prompt_id,
+      versionId: row.version_id,
+      title: row.title,
+      snippet: row.snippet,
+      rank: row.rank,
+    }));
+  }
+
+  // ----------------------------------------------------------- export/import
+
+  /**
+   * JSON-serializable snapshot of every table. One deliberate exception:
+   * provider API keys (providers.api_key_enc) are exported as null by design
+   * — they are encrypted with this device's OS keychain, useless anywhere
+   * else, and must be re-entered after import.
+   * Device-local settings and derived caches are also excluded; importing a
+   * library must not change this device's network routes or runtime behavior.
+   * All portable library data round-trips losslessly.
+   */
+  exportLibrary(): LibraryExport {
+    return {
+      meta: { formatVersion: 1, exportedAt: now() },
+      tables: {
+        prompts: this.all<PromptRow>("SELECT * FROM prompts ORDER BY created_at"),
+        branches: this.all<BranchRow>("SELECT * FROM branches ORDER BY created_at"),
+        versions: this.all<VersionRow>("SELECT * FROM versions ORDER BY created_at"),
+        notes: this.all<NoteRow>("SELECT * FROM notes ORDER BY created_at"),
+        tags: this.all<TagRow>("SELECT * FROM tags ORDER BY name"),
+        prompt_tags: this.all<PromptTagRow>("SELECT * FROM prompt_tags"),
+        collections: this.all<CollectionRow>("SELECT * FROM collections ORDER BY sort_order"),
+        collection_prompts: this.all<CollectionPromptRow>("SELECT * FROM collection_prompts"),
+        ratings: this.all<RatingRow>("SELECT * FROM ratings ORDER BY created_at"),
+        runs: this.all<RunRow>("SELECT * FROM runs ORDER BY created_at"),
+        settings: [],
+        providers: this.all<ProviderRow>("SELECT * FROM providers ORDER BY created_at").map((row) => ({
+          ...row,
+          api_key_enc: null,
+        })),
+        provider_models: this.all<ProviderModelRow>("SELECT * FROM provider_models ORDER BY provider_id, model_id"),
+      },
+    };
+  }
+
+  /**
+   * Imports an export payload. Primary-key collisions get fresh ids and all
+   * foreign keys are remapped consistently. Tags and collections colliding on
+   * their UNIQUE name are merged into the existing row. Returns per-table
+   * counts.
+   */
+  importLibrary(input: unknown): ImportSummary {
+    const data = preflightLibraryImport(input);
+    const summary: ImportSummary = {};
+    const bump = (table: string, field: keyof ImportTableSummary) => {
+      const entry = (summary[table] ??= { inserted: 0, merged: 0, remapped: 0, skipped: 0 });
+      entry[field] += 1;
+    };
+
+    this.db.transaction(() => {
+      const idMaps = {
+        prompts: new Map<string, string>(),
+        branches: new Map<string, string>(),
+        versions: new Map<string, string>(),
+        notes: new Map<string, string>(),
+        tags: new Map<string, string>(),
+        collections: new Map<string, string>(),
+        ratings: new Map<string, string>(),
+        runs: new Map<string, string>(),
+        providers: new Map<string, string>(),
+      };
+      const remap = (table: keyof typeof idMaps, id: string | null): string | null =>
+        id === null ? null : (idMaps[table].get(id) ?? id);
+
+      // Claims `wantedId` for `table`: returns the id to insert with (fresh on
+      // collision) and records the mapping.
+      const claimId = (table: keyof typeof idMaps, wantedId: string, existsSql: string): string => {
+        const existing = this.get<{ id: string }>(existsSql, wantedId);
+        if (existing) {
+          const fresh = randomUUID();
+          idMaps[table].set(wantedId, fresh);
+          bump(table, "remapped");
+          return fresh;
+        }
+        idMaps[table].set(wantedId, wantedId);
+        bump(table, "inserted");
+        return wantedId;
+      };
+
+      // -- tags / collections first (unique-name merge targets)
+      for (const tag of data.tables.tags) {
+        const byName = this.get<{ id: string }>("SELECT id FROM tags WHERE name = ?", tag.name);
+        if (byName) {
+          idMaps.tags.set(tag.id, byName.id);
+          bump("tags", "merged");
+          continue;
+        }
+        const id = claimId("tags", tag.id, "SELECT id FROM tags WHERE id = ?");
+        this.run("INSERT INTO tags (id, name, color) VALUES (?, ?, ?)", id, tag.name, tag.color);
+      }
+      for (const collection of data.tables.collections) {
+        const byName = this.get<{ id: string }>(
+          "SELECT id FROM collections WHERE name = ? AND parent_collection_id IS ?",
+          collection.name,
+          collection.parent_collection_id ?? null,
+        );
+        if (byName) {
+          idMaps.collections.set(collection.id, byName.id);
+          bump("collections", "merged");
+          continue;
+        }
+        const id = claimId("collections", collection.id, "SELECT id FROM collections WHERE id = ?");
+        this.run(
+          "INSERT INTO collections (id, name, sort_order, parent_collection_id) VALUES (?, ?, ?, ?)",
+          id,
+          collection.name,
+          collection.sort_order,
+          collection.parent_collection_id ?? null,
+        );
+      }
+
+      // -- AI provider configuration (pre-v3 bundles have no such tables).
+      // Keys are never exported — api_key_enc stays null and the user
+      // re-enters keys after import.
+      for (const provider of data.tables.providers) {
+        const id = claimId("providers", provider.id, "SELECT id FROM providers WHERE id = ?");
+        this.run(
+          "INSERT INTO providers (id, type, driver, name, api_key_enc, base_url, enabled, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
+          id,
+          provider.type,
+          provider.driver,
+          provider.name,
+          provider.base_url,
+          provider.enabled,
+          provider.created_at,
+        );
+      }
+      for (const pm of data.tables.provider_models) {
+        const result = this.db
+          .prepare(
+            "INSERT OR IGNORE INTO provider_models (provider_id, model_id, display_name, enabled) VALUES (?, ?, ?, ?)",
+          )
+          .run(remap("providers", pm.provider_id), pm.model_id, pm.display_name, pm.enabled);
+        bump("provider_models", result.changes > 0 ? "inserted" : "skipped");
+      }
+
+      // -- prompts: inserted with current_version_id NULL, fixed up after versions
+      const pendingCurrentVersion: Array<{ promptId: string; oldVersionId: string }> = [];
+      const pendingDraftBaseVersion: Array<{ promptId: string; oldVersionId: string }> = [];
+      for (const prompt of data.tables.prompts) {
+        const id = claimId(
+          "prompts",
+          prompt.id,
+          `WITH candidate(id) AS (VALUES (?))
+           SELECT id FROM candidate
+           WHERE EXISTS (SELECT 1 FROM prompts WHERE prompts.id = candidate.id)
+              OR EXISTS (
+                SELECT 1 FROM sync_prompt_tombstones
+                WHERE sync_prompt_tombstones.prompt_id = candidate.id
+              )`,
+        );
+        this.run(
+          `INSERT INTO prompts
+             (id, title, description, icon, draft_content, draft_base_version_id,
+              current_version_id, is_starred, created_at, updated_at, deleted_at)
+           VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+          id,
+          prompt.title,
+          prompt.description,
+          prompt.icon,
+          prompt.draft_content,
+          prompt.is_starred,
+          prompt.created_at,
+          prompt.updated_at,
+          prompt.deleted_at,
+        );
+        if (prompt.current_version_id) {
+          pendingCurrentVersion.push({ promptId: id, oldVersionId: prompt.current_version_id });
+        }
+        if (prompt.draft_base_version_id) {
+          pendingDraftBaseVersion.push({ promptId: id, oldVersionId: prompt.draft_base_version_id });
+        }
+      }
+
+      for (const branch of data.tables.branches) {
+        const id = claimId("branches", branch.id, "SELECT id FROM branches WHERE id = ?");
+        this.run(
+          "INSERT INTO branches (id, prompt_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+          id,
+          remap("prompts", branch.prompt_id),
+          branch.name,
+          branch.description,
+          branch.created_at,
+        );
+      }
+
+      for (const version of data.tables.versions) {
+        claimId(
+          "versions",
+          version.id,
+          `WITH candidate(id) AS (VALUES (?))
+           SELECT id FROM candidate
+           WHERE EXISTS (SELECT 1 FROM versions WHERE versions.id = candidate.id)
+              OR EXISTS (
+                SELECT 1 FROM sync_ops
+                WHERE table_name = 'versions' AND record_id = candidate.id
+              )
+              OR EXISTS (
+                SELECT 1 FROM sync_dirty
+                WHERE table_name = 'versions' AND record_id = candidate.id
+              )`,
+        );
+      }
+
+      for (const version of data.tables.versions) {
+        const id = idMaps.versions.get(version.id)!;
+        this.run(
+          `INSERT INTO versions
+             (id, prompt_id, branch_id, parent_version_id, number, label, content, content_format, change_note, author, status, source, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id,
+          remap("prompts", version.prompt_id),
+          remap("branches", version.branch_id),
+          null,
+          version.number,
+          version.label,
+          version.content,
+          version.content_format,
+          version.change_note,
+          version.author,
+          version.status,
+          version.source,
+          version.created_at,
+        );
+      }
+
+      for (const version of data.tables.versions) {
+        if (!version.parent_version_id) continue;
+        this.run(
+          "UPDATE versions SET parent_version_id = ? WHERE id = ?",
+          remap("versions", version.parent_version_id),
+          idMaps.versions.get(version.id),
+        );
+      }
+
+      for (const pending of pendingCurrentVersion) {
+        this.run(
+          "UPDATE prompts SET current_version_id = ? WHERE id = ?",
+          remap("versions", pending.oldVersionId),
+          pending.promptId,
+        );
+      }
+      for (const pending of pendingDraftBaseVersion) {
+        this.run(
+          "UPDATE prompts SET draft_base_version_id = ? WHERE id = ?",
+          remap("versions", pending.oldVersionId),
+          pending.promptId,
+        );
+      }
+
+      for (const note of data.tables.notes) {
+        const id = claimId("notes", note.id, "SELECT id FROM notes WHERE id = ?");
+        this.run(
+          "INSERT INTO notes (id, prompt_id, version_id, body, created_at) VALUES (?, ?, ?, ?, ?)",
+          id,
+          remap("prompts", note.prompt_id),
+          remap("versions", note.version_id),
+          note.body,
+          note.created_at,
+        );
+      }
+
+      for (const pt of data.tables.prompt_tags) {
+        const promptId = remap("prompts", pt.prompt_id)!;
+        const tagId = remap("tags", pt.tag_id)!;
+        const result = this.db
+          .prepare("INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) VALUES (?, ?)")
+          .run(promptId, tagId);
+        bump("prompt_tags", result.changes > 0 ? "inserted" : "skipped");
+      }
+
+      for (const cp of data.tables.collection_prompts) {
+        const collectionId = remap("collections", cp.collection_id)!;
+        const promptId = remap("prompts", cp.prompt_id)!;
+        const result = this.db
+          .prepare(
+            "INSERT OR IGNORE INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, ?)",
+          )
+          .run(collectionId, promptId, cp.sort_order);
+        bump("collection_prompts", result.changes > 0 ? "inserted" : "skipped");
+      }
+
+      for (const rating of data.tables.ratings) {
+        const id = claimId("ratings", rating.id, "SELECT id FROM ratings WHERE id = ?");
+        this.run(
+          `INSERT INTO ratings (id, target_type, target_id, effectiveness, clarity, completeness, actionability, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          id,
+          rating.target_type,
+          rating.target_type === "prompt"
+            ? remap("prompts", rating.target_id)
+            : remap("versions", rating.target_id),
+          rating.effectiveness,
+          rating.clarity,
+          rating.completeness,
+          rating.actionability,
+          rating.created_at,
+        );
+      }
+
+      for (const run of data.tables.runs) {
+        const id = claimId("runs", run.id, "SELECT id FROM runs WHERE id = ?");
+        this.run(
+          `INSERT INTO runs
+             (id, prompt_id, version_id, tool, model, provider, status, output, prompt_content, error,
+              latency_ms, run_group_id, outcome_rating, result_summary, metrics_json, started_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id,
+          remap("prompts", run.prompt_id),
+          remap("versions", run.version_id),
+          run.tool,
+          run.model,
+          // Provider references are remapped like other foreign keys (deleted
+          // providers pass through unresolved, as in live data).
+          remap("providers", run.provider),
+          run.status,
+          run.output,
+          run.prompt_content,
+          run.error,
+          run.latency_ms,
+          run.run_group_id,
+          run.outcome_rating,
+          run.result_summary,
+          run.metrics_json,
+          run.started_at,
+          run.created_at,
+        );
+      }
+
+      for (const setting of data.tables.settings) {
+        // Settings are device-local. Default-deny imported keys so future
+        // endpoint or cache settings cannot silently become portable.
+        bump("settings", "skipped");
+      }
+
+      // Rebuild search rows for every prompt we touched.
+      const touched = new Set<string>(idMaps.prompts.values());
+      for (const promptId of touched) rebuildPromptSearchIndex(this.db, promptId);
+    })();
+
+    return summary;
+  }
+}
+
+/**
+ * Turns free text into an FTS5 MATCH expression: each token is quoted and
+ * prefix-matched ("foo bar" -> `"foo"* "bar"*`, i.e. AND semantics).
+ */
+function buildMatchQuery(query: string): string | null {
+  const tokens = query
+    .split(/\s+/)
+    .map((t) => t.replace(/"/g, "").trim())
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return null;
+  return tokens.map((t) => `"${t}"*`).join(" ");
+}

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/jackblackjack/promptbr0/tree/main/docs
+    about: Installation, feature guides, CLI reference, sync and configuration.
+  - name: Report a security vulnerability
+    url: https://github.com/jackblackjack/promptbr0/security/advisories/new
+    about: Report suspected vulnerabilities privately. Do not open a public issue.
+  - name: Contributing guidelines
+    url: https://github.com/jackblackjack/promptbr0/blob/main/CONTRIBUTING.md
+    about: Build, test and submit changes to the repository.

@@ -1,0 +1,135 @@
+name: Bug report
+description: Report a reproducible problem in the PromptBr0 desktop app or CLI.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve PromptBr0. Search the existing issues before
+        filing.
+
+        Do not include API keys, private prompt content, device certificates,
+        access tokens, or other sensitive data. Report security vulnerabilities
+        privately through the link on the issue chooser, not through this form.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: One or two sentences describing the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest reliable sequence and name the view you were in (Library, Suggestions, History, Results, or a Settings section).
+      placeholder: |
+        1. Open …
+        2. Select …
+        3. Observe …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages or dialogs verbatim.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of PromptBr0 does this affect?
+      options:
+        - Prompt editing, versions or branches
+        - Search, tags, collections or Trash
+        - History, notes or diff view
+        - AI providers, model runs or prompt assist
+        - Ratings, run log or LLM judge
+        - Agent integration or the CLI
+        - Device-to-device sync
+        - Import, export or backups
+        - Updates or installation
+        - Appearance, keyboard shortcuts or accessibility
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PromptBr0 version
+      description: "Settings → About shows the version (for example 0.1.0). For the CLI, run `promptbr0 --version`."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: How did you install PromptBr0?
+      options:
+        - macOS installer (DMG)
+        - Windows installer
+        - Linux AppImage
+        - Linux .deb package
+        - Built from source (pnpm dev or a local build)
+        - Other or not sure
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and architecture
+      description: Include the OS version and CPU architecture, for example "macOS 15.1 arm64" or "Ubuntu 24.04 x64".
+      placeholder: "macOS 15.1 arm64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature-details
+    attributes:
+      label: Feature-specific details
+      description: |
+        Skip anything that does not apply.
+        - AI runs: provider name, model id, and whether the key is stored in the app or read from an environment variable.
+        - Sync: every device and its OS, the step that failed (discovery, pairing code, address pairing, an ongoing sync), and the state shown in Settings → Sync.
+        - CLI or agent integration: the command you ran and whether the desktop app was open.
+        - Import/export: where the JSON came from and whether the import was a merge into an existing library.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: |
+        Paste sanitized output. If you launched PromptBr0 from a terminal, include that output. Settings → Data & Backup → Database location shows the database path; a backup that reproduces the problem helps, but review it for private prompts before sharing.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and found no duplicate.
+          required: true
+        - label: I removed credentials, private prompts, tokens, device certificates and personal data.
+          required: true

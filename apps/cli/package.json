@@ -1,0 +1,61 @@
+{
+  "name": "@promptbr0/cli",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Local-first CLI for versioning, searching, evaluating, and sharing AI prompts in shell pipelines and coding-agent workflows.",
+  "keywords": [
+    "promptbr0",
+    "prompt-library",
+    "prompt-management",
+    "prompt-engineering",
+    "prompt-versioning",
+    "prompt-version-control",
+    "prompt-evaluation",
+    "prompt-cli",
+    "local-first",
+    "ai",
+    "llm",
+    "coding-agents"
+  ],
+  "homepage": "https://github.com/jackblackjack/promptbr0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackblackjack/promptbr0.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/jackblackjack/promptbr0/issues"
+  },
+  "bin": {
+    "promptbr0": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node ../../scripts/clean-package-output.mjs && tsc -p tsconfig.json --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
+    "prepack": "node ../../scripts/require-pnpm-publish.mjs && pnpm build",
+    "prepublishOnly": "node ../../scripts/require-pnpm-publish.mjs",
+    "test": "pnpm build && vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@promptbr0/core": "workspace:*",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.3.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

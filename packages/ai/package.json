@@ -1,0 +1,34 @@
+{
+  "name": "@promptbr0/ai",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "PromptBr0 AI layer: provider registry, models.dev catalog parsing, prompt execution and cost estimation over the Vercel AI SDK. Zero Electron dependencies.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./judge-average": "./src/judge-average.ts"
+  },
+  "types": "./src/index.ts",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.44",
+    "@ai-sdk/google": "4.0.53",
+    "@ai-sdk/openai": "4.0.49",
+    "@ai-sdk/openai-compatible": "3.0.39",
+    "ai": "7.0.82",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.3.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

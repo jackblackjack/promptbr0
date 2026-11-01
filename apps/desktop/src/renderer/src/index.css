@@ -1,0 +1,336 @@
+@import "tailwindcss";
+
+/* Theme palettes. Dark is the :root default (and historical look); light
+   overrides every variable under [data-theme="light"]. The `data-theme`
+   attribute is set on <html> before first paint by an inline script in
+   index.html, and kept in sync by lib/theme.ts (dark | light | system). */
+:root {
+  color-scheme: dark;
+  /* PromptBr0 brand palette — see brand design spec */
+  --pb-app: #0a0f0c;
+  --pb-panel: #0f1a14;
+  --pb-raised: #14201a;
+  --pb-hover: rgba(0, 200, 50, 0.05);
+  --pb-line: rgba(0, 200, 50, 0.07);
+  --pb-line-strong: rgba(0, 200, 50, 0.14);
+  --pb-ink: #b0c4a8;
+  --pb-ink-dim: #6a8a64;
+  --pb-ink-faint: #3d5a38;
+  --pb-accent: #00c840;
+  --pb-accent-strong: #00a835;
+  --pb-accent-soft: rgba(0, 200, 64, 0.12);
+  --pb-star: #d4a843;
+  --pb-success: #00c840;
+  --pb-danger: #d65b3f;
+  --pb-danger-strong: #b8482f;
+  --pb-danger-soft: rgba(214, 91, 63, 0.12);
+  --pb-diff-add-bg: rgba(0, 200, 64, 0.08);
+  --pb-diff-add-text: #80d890;
+  --pb-diff-add-gutter: rgba(0, 200, 64, 0.6);
+  --pb-diff-del-bg: rgba(214, 91, 63, 0.1);
+  --pb-diff-del-text: #e8a090;
+  --pb-diff-del-gutter: rgba(214, 91, 63, 0.6);
+  --pb-selection: rgba(0, 200, 64, 0.18);
+  --pb-cm-active-line: rgba(0, 200, 64, 0.03);
+  --pb-scrollbar: rgba(0, 200, 50, 0.1);
+  --pb-scrollbar-hover: rgba(0, 200, 50, 0.2);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --pb-app: #f4f7f2;
+  --pb-panel: #e8ede4;
+  --pb-raised: #d4ddd0;
+  --pb-hover: rgba(17, 107, 84, 0.05);
+  --pb-line: rgba(24, 60, 80, 0.1);
+  --pb-line-strong: rgba(24, 60, 80, 0.18);
+  --pb-ink: #1a2618;
+  --pb-ink-dim: #4a6348;
+  --pb-ink-faint: #7a9478;
+  --pb-accent: #008F40;
+  --pb-accent-strong: #006b30;
+  --pb-accent-soft: rgba(0, 143, 64, 0.1);
+  --pb-star: #A87945;
+  --pb-success: #008F40;
+  --pb-danger: #D65B3F;
+  --pb-danger-strong: #b8482f;
+  --pb-danger-soft: rgba(214, 91, 63, 0.08);
+  --pb-diff-add-bg: rgba(0, 143, 64, 0.08);
+  --pb-diff-add-text: #1a7a3a;
+  --pb-diff-add-gutter: rgba(0, 143, 64, 0.55);
+  --pb-diff-del-bg: rgba(214, 91, 63, 0.07);
+  --pb-diff-del-text: #993020;
+  --pb-diff-del-gutter: rgba(214, 91, 63, 0.5);
+  --pb-selection: rgba(0, 143, 64, 0.15);
+  --pb-cm-active-line: rgba(17, 107, 84, 0.04);
+  --pb-scrollbar: rgba(24, 60, 80, 0.12);
+  --pb-scrollbar-hover: rgba(24, 60, 80, 0.22);
+}
+
+@theme inline {
+  --color-app: var(--pb-app);
+  --color-panel: var(--pb-panel);
+  --color-raised: var(--pb-raised);
+  --color-hover: var(--pb-hover);
+  --color-line: var(--pb-line);
+  --color-line-strong: var(--pb-line-strong);
+  --color-ink: var(--pb-ink);
+  --color-ink-dim: var(--pb-ink-dim);
+  --color-ink-faint: var(--pb-ink-faint);
+  --color-accent: var(--pb-accent);
+  --color-accent-strong: var(--pb-accent-strong);
+  --color-accent-soft: var(--pb-accent-soft);
+  --color-star: var(--pb-star);
+  --color-success: var(--pb-success);
+  --color-danger: var(--pb-danger);
+  --color-danger-strong: var(--pb-danger-strong);
+  --color-danger-soft: var(--pb-danger-soft);
+  --color-diff-add-bg: var(--pb-diff-add-bg);
+  --color-diff-add-text: var(--pb-diff-add-text);
+  --color-diff-add-gutter: var(--pb-diff-add-gutter);
+  --color-diff-del-bg: var(--pb-diff-del-bg);
+  --color-diff-del-text: var(--pb-diff-del-text);
+  --color-diff-del-gutter: var(--pb-diff-del-gutter);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-app);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.pb-drag {
+  -webkit-app-region: drag;
+}
+
+.pb-no-drag,
+button,
+input,
+textarea {
+  -webkit-app-region: no-drag;
+}
+
+/* Subtle scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--pb-scrollbar) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--pb-scrollbar);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--pb-scrollbar-hover);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* CodeMirror host. Font size is user-configurable via --cm-font-size, set
+   on <html> from the editorFontSize pref (see lib/prefs.ts). */
+.cm-host {
+  height: 100%;
+  min-height: 0;
+}
+/* @uiw/react-codemirror renders an unstyled wrapper div between .cm-host and
+   .cm-editor; without a height it collapses to content size and long
+   documents overflow past the editor's flex allocation into the footer. */
+.cm-host > div {
+  height: 100%;
+  min-height: 0;
+}
+.cm-host .cm-editor {
+  height: 100%;
+  background: transparent;
+  font-size: var(--cm-font-size, 13px);
+}
+.cm-host .cm-editor.cm-focused {
+  outline: none;
+}
+.cm-host .cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.65;
+}
+.cm-host .cm-gutters {
+  background: transparent;
+  border-right: 1px solid var(--color-line);
+  color: var(--color-ink-faint);
+}
+.cm-host .cm-activeLine {
+  background: var(--pb-cm-active-line);
+}
+.cm-host .cm-activeLineGutter {
+  background: transparent;
+  color: var(--color-ink-dim);
+}
+.cm-host .cm-selectionBackground,
+.cm-host .cm-editor ::selection {
+  background: var(--pb-selection) !important;
+}
+.cm-host .cm-cursor {
+  border-left-color: var(--color-ink);
+}
+
+/* Shiki dual-theme code blocks (lib/highlight.ts). Spans carry
+   --shiki-light/--shiki-dark inline vars; pick per app theme so highlighting
+   follows [data-theme] with no JS. The app surface owns background/border
+   (bg-app + border-line on the block wrapper), so Shiki's theme background
+   is dropped. */
+.pb-shiki .shiki {
+  background-color: transparent !important;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.pb-shiki .shiki span {
+  color: var(--shiki-dark);
+}
+[data-theme="light"] .pb-shiki .shiki span {
+  color: var(--shiki-light);
+}
+
+/* Radix animation helpers */
+@keyframes pb-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Fade-only: dialogs are positioned with Tailwind's `translate` property
+   (-translate-x/y-1/2); animating `transform: translate(...)` here would
+   compound with it and flash the dialog off-center on open. */
+@keyframes pb-pop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pb-menu-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.pb-overlay {
+  animation: pb-overlay-in 120ms ease-out;
+}
+.pb-dialog {
+  animation: pb-pop-in 140ms ease-out;
+}
+.pb-menu {
+  animation: pb-menu-in 110ms ease-out;
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin, top right);
+}
+
+/* Panel resize separators (react-resizable-panels); the data attribute
+   carries the interaction state (idle/hover/focus/active/disabled). */
+[data-separator] {
+  background: var(--color-line);
+  transition: background 120ms ease-out;
+}
+[data-separator]:hover,
+[data-separator="hover"],
+[data-separator="focus"] {
+  background: var(--color-line-strong);
+  outline: none;
+}
+[data-separator]:active,
+[data-separator="active"] {
+  background: var(--color-accent);
+}
+
+/* Prompt history graph. React Flow ships its own neutral palette; keep the
+   canvas, branch edges, and focus states on PromptBr0 theme variables so
+   the view follows both dark and light mode without a second theme system. */
+.pb-history-graph .react-flow {
+  --xy-background-color: var(--color-app);
+  --xy-background-pattern-color: var(--pb-line-strong);
+  --xy-edge-stroke: var(--pb-line-strong);
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--pb-accent);
+  --xy-handle-background-color: var(--pb-ink-faint);
+  --xy-handle-border-color: var(--pb-panel);
+}
+
+.pb-history-graph .react-flow__background-pattern.dots {
+  opacity: 0.6;
+}
+
+.pb-history-graph .react-flow__pane {
+  cursor: grab;
+}
+
+.pb-history-graph .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.pb-history-graph .react-flow__node {
+  cursor: pointer;
+}
+
+.pb-history-graph .pb-history-node {
+  transition: border-color 120ms ease-out, box-shadow 120ms ease-out, background-color 120ms ease-out;
+}
+
+.pb-history-graph .pb-history-node:hover {
+  border-color: var(--pb-accent);
+}
+
+.pb-history-graph .pb-history-node:focus-visible {
+  outline: 2px solid var(--pb-accent);
+  outline-offset: 3px;
+}
+
+.pb-history-graph .pb-history-node input:focus-visible {
+  outline: 2px solid var(--pb-accent);
+  outline-offset: 2px;
+}
+
+.pb-history-graph .pb-history-edge-continuation .react-flow__edge-path {
+  stroke: var(--pb-line-strong);
+}
+
+.pb-history-graph .pb-history-edge-variation .react-flow__edge-path {
+  stroke: var(--pb-accent);
+  stroke-dasharray: 5 4;
+}
+
+.pb-history-graph-legend {
+  backdrop-filter: blur(8px);
+}
+
+@media (max-width: 640px) {
+  .pb-history-graph-legend {
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+  }
+
+  .pb-history-graph-legend span {
+    gap: 0.25rem;
+  }
+
+  .pb-history-graph-legend > span > span {
+    width: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-history-graph *,
+  .pb-history-graph *::before,
+  .pb-history-graph *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -1,0 +1,80 @@
+# Search and organize prompts
+
+Use search and organization tools to keep a growing library easy to browse.
+
+## Find a prompt
+
+Press <kbd>⌘K</kbd> on macOS or <kbd>Ctrl+K</kbd> on Windows and Linux to open
+search. It finds prompt titles, descriptions, tags, notes, and saved version
+content. Start typing a word or part of a word, then select a result to open
+the prompt in **Library** on its current/default saved version. If several
+versions of one prompt match, the prompt appears once.
+
+The smaller field above the prompt list filters the visible list by title,
+description, and tags. Use the full search when you need to find text from an
+older version or a note.
+
+## Copy a prompt with Quick access
+
+The optional global prompt palette is a compact, copy-only view for using your
+library while another app is in front. Enable it under **Settings → Quick
+access**. The suggested shortcut is <kbd>⌘⇧Space</kbd> on macOS and
+<kbd>Ctrl+Shift+Space</kbd> on Windows and Linux; choose **Record new
+shortcut** to use another key combination. Then press the registered shortcut
+while PromptBr0 is running. The **Open prompt palette** application-menu
+item is always available as a fallback. On Windows and Linux, press
+<kbd>Alt</kbd> to reveal the menu bar first. Some Linux desktops may request
+system permission when you enable a global shortcut for the first time.
+
+When the search is empty, the palette shows up to 20 recently updated prompts,
+with starred prompts first. Start typing to search titles, descriptions, tags,
+notes, and saved version content. Selecting a match found through saved history
+resolves the prompt's current saved version. Fill any `{{variables}}`, check the
+exact plain-text preview, then choose **Copy prompt** or press
+<kbd>⌘Enter</kbd> / <kbd>Ctrl+Enter</kbd>. Search text and variable values are
+temporary and clear whenever the palette is dismissed.
+
+The feature is off by default and does not launch PromptBr0 or create a
+login item. Settings show whether the shortcut registered successfully. If a
+replacement conflicts with the system or another app, the previous working
+shortcut remains active while you choose another shortcut or retry.
+
+On macOS, Quick access remains available after you close the library window as
+long as PromptBr0 is still running. On Windows and Linux, closing the library
+window exits PromptBr0 and disables the shortcut until the app starts again.
+To keep Quick access available on any system, turn on **Keep running in the
+system tray** under **Settings → Appearance**: closing the window then hides
+it, and the tray menu offers **Show** (**Показать**) and **Quit** (**Выход**).
+
+## Filter and sort
+
+Use **Filters** in the library to narrow the list by tag, starred state, or
+minimum rating. Sort prompts by when they were updated or created, by name, or
+by rating. Selecting a collection in the left rail shows its prompts.
+
+For a quick tag filter, click a tag in the left rail, on a prompt card, or in
+the prompt details pane. Click that tag again to remove it from the filter. To
+reset all active filters, open **Filters** and choose **Clear all**.
+
+## Tags, collections, and stars
+
+- Create a **tag** with the **+** beside Tags, then attach it to related
+  prompts. A prompt can have several tags.
+- Create a **collection** with the **+** beside Collections. To create a prompt
+  inside it, right-click the collection and choose **New Prompt**, or select
+  the collection and use the **New prompt** button above the prompt list.
+- Drag a collection onto another collection's name to move it inside. Hold the
+  pointer over a collapsed folder for a moment to open it, so the drag can
+  continue deeper. To change the display order, drop the collection on the top
+  or bottom edge of a row instead: an insertion line shows where it will land,
+  including inside another folder.
+- Add or remove an existing prompt through **More actions → Move to
+  collection…**, or right-click it in the prompt list. A prompt can belong to
+  more than one collection.
+- Select the star on a prompt to put it in the **Starred** view.
+
+## Notes
+
+Use the **Notes** tab to record context, test results, or usage guidance for a
+prompt. Notes can be attached to the prompt as a whole or to a specific
+version, and full search includes their contents.

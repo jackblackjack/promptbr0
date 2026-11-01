@@ -1,0 +1,205 @@
+{
+  "name": "@promptbr0/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "PromptBr0 desktop app (Electron + React): local-first prompt library with versioning, branching, ratings and run log.",
+  "author": "PromptBr0",
+  "homepage": "https://github.com/jackblackjack/promptbr0",
+  "desktopName": "com.promptbr0.ru",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "ELECTRON_OZONE_PLATFORM_HINT=x11 ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
+    "dev:dev": "ELECTRON_OZONE_PLATFORM_HINT=x11 ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "icons": "node scripts/build-icons.mjs && node scripts/generate-menu-icons.mjs",
+    "postinstall": "node scripts/patch-electron-name.mjs || true",
+    "dist": "electron-vite build && node scripts/package-desktop.mjs",
+    "test": "vitest run && pnpm test:release-assets",
+    "test:release-assets": "node --test scripts/test/collect-release-installers.mjs scripts/test/linux-launcher.mjs scripts/test/macos-executable-uuid.mjs scripts/test/package-desktop.mjs scripts/test/verify-macos-distribution.mjs scripts/test/verify-release-architecture.mjs scripts/test/verify-desktop-icons.mjs",
+    "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json"
+  },
+  "build": {
+    "appId": "com.promptbr0.ru",
+    "productName": "PromptBr0",
+    "afterPack": "scripts/after-pack.mjs",
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "../../THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "node_modules/electron/dist/LICENSE",
+        "to": "LICENSE.electron.txt"
+      },
+      {
+        "from": "node_modules/electron/dist/LICENSES.chromium.html",
+        "to": "LICENSES.chromium.html"
+      },
+      {
+        "from": "build/menu-icons",
+        "to": "menu-icons"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "npmRebuild": false,
+    "protocols": [
+      {
+        "name": "PromptBr0 snapshot link",
+        "schemes": [
+          "promptbr0"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "artifactName": "promptbr0_${version}_macos_${arch}.${ext}",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "PromptBr0 discovers and syncs with your other devices over the local network. Nothing ever leaves your machines.",
+        "NSBonjourServices": [
+          "_promptbr0._tcp"
+        ]
+      },
+      "target": [
+        {
+          "target": "dmg"
+        }
+      ]
+    },
+    "dmg": {
+      "title": "PromptBr0 ${version}",
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis"
+        }
+      ],
+      "artifactName": "promptbr0_${version}_windows_${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
+    "linux": {
+      "icon": "build/icon-512.png",
+      "category": "Utility;Development;",
+      "executableName": "promptbr0",
+      "syncDesktopName": true,
+      "executableArgs": [
+        "--ozone-platform=x11"
+      ],
+      "maintainer": "PromptBr0 <promptbr0@users.noreply.local>",
+      "target": [
+        {
+          "target": "AppImage"
+        },
+        {
+          "target": "deb"
+        }
+      ],
+      "artifactName": "promptbr0_${version}_linux_${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2t64 | libasound2"
+      ]
+    }
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.9",
+    "@promptbr0/ai": "workspace:*",
+    "@promptbr0/core": "workspace:*",
+    "@radix-ui/react-alert-dialog": "^1.1.23",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@radix-ui/react-popover": "^1.1.23",
+    "@radix-ui/react-scroll-area": "^1.2.18",
+    "@radix-ui/react-tabs": "^1.1.21",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "@tanstack/react-query": "^5.102.6",
+    "@uiw/react-codemirror": "^4.25.11",
+    "@xyflow/react": "^12.11.6",
+    "better-sqlite3": "13.0.3",
+    "bonjour-service": "^1.4.4",
+    "codemirror": "^6.0.2",
+    "diff": "^9.0.0",
+    "ipaddr.js": "^2.5.0",
+    "lucide-react": "^1.34.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.12.3",
+    "remark-gfm": "^4.0.1",
+    "selfsigned": "^5.5.0",
+    "semver": "7.8.5",
+    "shiki": "^4.4.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "26.3.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@types/semver": "7.8.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.5.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "6.0.0-beta.1",
+    "jsdom": "^30.0.1",
+    "png-to-ico": "^3.0.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  }
+}

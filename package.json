@@ -1,0 +1,19 @@
+{
+  "name": "promptbr0",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:npm-packages": "node scripts/test/npm-publish-guard.mjs && node scripts/test/npm-package-smoke.mjs",
+    "notices": "node scripts/generate-notices.mjs",
+    "license-check": "node scripts/check-licenses.mjs",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm --filter @promptbr0/desktop dev"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

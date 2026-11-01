@@ -1,0 +1,44 @@
+{
+  "name": "@promptbr0/core",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    },
+    "types": "./dist/index.d.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "PromptBr0 domain core: SQLite-backed prompt library with versioning, branching, tags, collections, ratings, runs and FTS search. Zero Electron dependencies.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "node ../../scripts/clean-package-output.mjs && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "22.20.1",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

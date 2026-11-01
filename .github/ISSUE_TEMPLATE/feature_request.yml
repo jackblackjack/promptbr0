@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose a capability or workflow improvement for PromptBr0.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        PromptBr0 is local-first by design: the library is a local SQLite file,
+        sync is peer-to-peer with no server or account, and agents can only
+        propose variations that a human approves. Requests that respect those
+        constraints are easier to act on.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and where does PromptBr0 get in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want, including the views or CLI commands involved.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Current workarounds or other designs you weighed.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of PromptBr0 would this change?
+      options:
+        - Prompt editing, versions or branches
+        - Search, tags, collections or Trash
+        - History, notes or diff view
+        - AI providers, model runs or prompt assist
+        - Ratings, run log or LLM judge
+        - Agent integration or the CLI
+        - Device-to-device sync
+        - Import, export or backups
+        - Updates or installation
+        - Appearance, keyboard shortcuts or accessibility
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and the documentation for this request.
+          required: true
+        - label: I can help test this change if a maintainer builds it.
+          required: false
