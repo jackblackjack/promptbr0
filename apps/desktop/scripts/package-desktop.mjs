@@ -2,7 +2,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, renameSync } from "node:fs";
 import path from "node:path";
 
-const builderArguments = process.argv.slice(2);
+// `pnpm run dist -- --linux` forwards the separator verbatim (pnpm 11), and
+// electron-builder would then treat `--linux` as a positional argument and
+// silently fall back to the host platform/architecture. Drop the separator so
+// the flags always reach the builder as flags.
+const builderArguments = process.argv.slice(2).filter((argument) => argument !== "--");
 const targetsLinux = builderArguments.some(
   (argument) => argument === "--linux" || argument === "-l" || argument.startsWith("--linux="),
 );

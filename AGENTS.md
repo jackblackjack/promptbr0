@@ -156,14 +156,18 @@ Quality gates and CI (`.github/workflows/`):
 - `main` is the only long-lived branch. Feature work happens on short-lived
   branches that open pull requests directly against `main`; maintainers may
   commit small changes straight to `main`.
-- `ci.yml` is the only GitHub Actions workflow. Its `ci` job runs the license
-  check, typecheck, tests and build on pushes to `main` and pull requests
-  targeting `main` (macos-latest, Node 22, `pnpm install
-  --frozen-lockfile`). The `npm-package-smoke` matrix packs and exercises the
-  workspace packages on the six supported OS/architecture targets.
-- GitHub Actions never creates branches, publishes npm packages, builds
-  installers, creates tags, or creates GitHub Releases. Releases are manual;
-  follow `docs-internal/RELEASING.md`.
+- `ci.yml` runs the license check, typecheck, tests and build on pushes to
+  `main` and pull requests targeting `main` (macos-latest, Node 22, `pnpm
+  install --frozen-lockfile`). The `npm-package-smoke` matrix packs and
+  exercises the workspace packages on the six supported OS/architecture
+  targets.
+- `release-installers.yml` builds the desktop installers for a `v*` tag (or a
+  manual dispatch) on Linux, Windows and macOS runners, verifies each packaged
+  architecture, and keeps the canonical files as workflow artifacts. It does
+  not sign, tag, publish or create a GitHub Release.
+- GitHub Actions never creates branches, publishes npm packages, creates tags,
+  or creates GitHub Releases. Publication is manual; follow
+  `docs-internal/RELEASING.md`.
 - The `apps/cli` workspace entry point must be
   published with pnpm. Their `workspace:*` dependencies are rewritten only by
   pnpm's pack/publish path; source-directory `npm pack`/`npm publish` is

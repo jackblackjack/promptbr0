@@ -59,6 +59,36 @@ test("Windows packaging forces the NSIS-compatible BCJ filter", async () => {
   }
 });
 
+test("A forwarded pnpm argument separator never reaches electron-builder", async () => {
+  const binDirectory = await mkdtemp(join(tmpdir(), "promptbr0-builder-bin-"));
+  const fakeBuilder = join(binDirectory, "electron-builder");
+
+  try {
+    await writeFile(
+      fakeBuilder,
+      ["#!/usr/bin/env node", 'console.log(`args=${process.argv.slice(2).join(" ")}`);'].join(
+        "\n",
+      ),
+    );
+    await chmod(fakeBuilder, 0o755);
+
+    const environment = { ...process.env };
+    environment.PATH = `${binDirectory}${delimiter}${environment.PATH ?? ""}`;
+
+    // pnpm run forwards the literal `--`; without normalization electron-builder
+    // would parse the platform and arch flags as positionals and build for the host.
+    const result = spawnSync(process.execPath, [scriptPath, "--", "--win", "--arm64"], {
+      encoding: "utf8",
+      env: environment,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^args=--win --arm64$/m);
+  } finally {
+    await rm(binDirectory, { recursive: true, force: true });
+  }
+});
+
 test("Linux packaging normalizes electron-builder architecture names", async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), "promptbr0-linux-artifact-names-"));
   const binDirectory = await mkdtemp(join(tmpdir(), "promptbr0-builder-bin-"));
