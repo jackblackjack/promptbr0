@@ -110,12 +110,12 @@ export function TagEditor({ prompt, compact }: { prompt: PromptDetail; compact?:
                   className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px] text-accent transition-colors hover:bg-hover"
                 >
                   <Plus size={11} />
-                  Create “{query.trim()}”
+                  {t("tag_editor.create_tag", { name: query.trim() })}
                 </button>
               )}
               {candidates.length === 0 && !query.trim() && (
                 <p className="px-2 py-1 text-[11px] text-ink-faint">
-                  {compact ? "Type to create one." : "All tags are already attached. Type to create one."}
+                  {compact ? t("tag_editor.type_to_create") : t("tag_editor.all_attached")}
                 </p>
               )}
             </div>
