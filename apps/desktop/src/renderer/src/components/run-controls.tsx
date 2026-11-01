@@ -117,7 +117,7 @@ export function GenerateResultDialog({
         <Dialog.Overlay className="pb-overlay fixed inset-0 z-40 bg-black/60" />
         <Dialog.Content
           aria-describedby={undefined}
-          className="pb-dialog fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-black/50 focus:outline-none"
+          className="pb-dialog fixed left-1/2 top-1/2 z-50 flex h-[80vh] w-[75vw] flex-col -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-black/50 focus:outline-none"
         >
           <div className="flex items-center justify-between px-5 pt-5 pb-2">
             <Dialog.Title className="text-sm font-semibold text-ink">{t("run_controls.generated_prompt")}</Dialog.Title>
@@ -128,10 +128,12 @@ export function GenerateResultDialog({
               <X size={15} />
             </Dialog.Close>
           </div>
+          {/* 75vw × 80vh = 60% of the window area; flex-1 lets the textarea
+              fill the dialog instead of the old 50vh cap. */}
           <textarea
             readOnly
             value={content}
-            className="mx-5 mb-4 min-h-[200px] max-h-[50vh] w-[calc(100%-2.5rem)] resize-y overflow-y-auto rounded-md border border-line bg-app px-2.5 py-1.5 font-mono text-[13px] text-ink focus:outline-none"
+            className="mx-5 mb-4 min-h-[8rem] w-[calc(100%-2.5rem)] flex-1 overflow-y-auto rounded-md border border-line bg-app px-2.5 py-1.5 font-mono text-[13px] text-ink focus:outline-none"
           />
           <div className="flex justify-end gap-2 px-5 pb-5">
             <button

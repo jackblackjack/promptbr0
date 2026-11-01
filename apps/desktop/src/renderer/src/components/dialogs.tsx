@@ -19,12 +19,17 @@ export function DialogShell({
   title,
   children,
   width = "max-w-md",
+  size,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   children: ReactNode;
   width?: string;
+  /** Replaces the default sizing block (width/height/display) entirely, e.g.
+      "flex h-[80vh] w-[75vw]" — an appended w-* class could not reliably override
+      the base w-[calc(100vw-2rem)] because cx is a plain join, not tailwind-merge. */
+  size?: string;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -32,9 +37,9 @@ export function DialogShell({
         <Dialog.Overlay className="pb-overlay fixed inset-0 z-40 bg-black/60" />
         <Dialog.Content
           className={cx(
-            "pb-dialog fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto",
+            "pb-dialog fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2",
+            size ?? cx("max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] overflow-y-auto", width),
             "rounded-xl border border-line-strong bg-panel p-5 shadow-2xl shadow-black/50 focus:outline-none",
-            width,
           )}
         >
           <div className="mb-4 flex items-center justify-between gap-2">
@@ -256,8 +261,15 @@ export function NewPromptDialog({
 
   return (
     <>
-    <DialogShell open={open} onOpenChange={onOpenChange} title={t("dialog.new_prompt")} width="max-w-lg">
-      <form onSubmit={submit} className="space-y-4">
+    {/* 75vw × 80vh = 60% of the window area; flex-col so the content
+        textarea can stretch to fill the extra height. */}
+    <DialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t("dialog.new_prompt")}
+      size="flex h-[80vh] w-[75vw] flex-col overflow-y-auto"
+    >
+      <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col gap-4">
         <label className="block space-y-1.5">
           <span className="text-xs font-medium text-ink-dim">{t("dialog.title")}</span>
           <input
@@ -277,7 +289,7 @@ export function NewPromptDialog({
             className={inputClass}
           />
         </label>
-        <div className="space-y-1.5">
+        <div className="flex min-h-0 flex-1 flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-ink-dim">{t("dialog.initial_content")}</span>
             <button
@@ -331,7 +343,7 @@ export function NewPromptDialog({
             onChange={(e) => setContent(e.target.value)}
             placeholder={t("dialog.content_placeholder")}
             rows={7}
-            className={cx(inputClass, "resize-y font-mono text-xs leading-relaxed")}
+            className={cx(inputClass, "min-h-[8rem] flex-1 font-mono text-xs leading-relaxed")}
           />
         </div>
         {allTags.length > 0 && (
