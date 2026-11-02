@@ -311,7 +311,7 @@ function PromptCard({
             </span>
           </div>
           {prompt.description && (
-            <p className="mt-0.5 truncate text-[12px] text-ink-dim">{prompt.description}</p>
+            <p className="mt-0.5 text-[12px] text-ink-dim break-words">{prompt.description}</p>
           )}
           {prompt.tags.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
