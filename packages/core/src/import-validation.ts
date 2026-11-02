@@ -2,6 +2,7 @@ import type {
   BranchRow, CollectionPromptRow, CollectionRow, NoteRow, PromptRow, PromptTagRow,
   ProviderModelRow, ProviderRow, RatingRow, RunRow, SettingRow, TagRow, VersionRow,
 } from "./types.js";
+import { validateBlocksEnvelope } from "./blocks.js";
 
 export interface LibraryExport {
   meta: { formatVersion: 1; exportedAt: string };
@@ -69,6 +70,7 @@ const rowRules = {
   prompts: {
     id, title: text, description: nullableText, icon: nullableText, draft_content: nullableText,
     draft_base_version_id: { ...nullableId, legacyDefault: null }, current_version_id: nullableId,
+    blocks_json: legacyNullableText,
     is_starred: flag, created_at: timestamp, updated_at: timestamp,
     deleted_at: { ...timestamp, nullable: true },
   },
@@ -253,6 +255,8 @@ export function preflightLibraryImport(input: unknown): NormalizedLibraryExport 
     if (row.draft_base_version_id !== null && row.draft_content === null) {
       issue(`${path}.draft_base_version_id`, "missing_draft", "A draft base requires draft content");
     }
+    const blocksError = validateBlocksEnvelope(row.blocks_json);
+    if (blocksError) issue(`${path}.blocks_json`, "invalid_value", blocksError);
   });
   rows.branches.forEach((row, i) => reference(prompts, row.prompt_id, `tables.branches[${i}].prompt_id`));
   rows.versions.forEach((row, i) => {

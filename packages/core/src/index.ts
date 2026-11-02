@@ -1,6 +1,14 @@
 import type BetterSqlite3 from "better-sqlite3";
 export type Database = BetterSqlite3.Database;
 export { backupDatabase, latestBackup, listBackups, type BackupFile } from "./backup.js";
+export {
+  assemblePromptContent,
+  parseBlocksJson,
+  validateBlocksEnvelope,
+  BLOCK_LIMITS,
+  type PromptBlock,
+  type PromptBlockInput,
+} from "./blocks.js";
 export { openDatabase, openMemoryDatabase, type OpenDatabaseResult } from "./db.js";
 export {
   preflightLibraryImport,

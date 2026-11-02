@@ -59,6 +59,10 @@ function populate(library: PromptLibrary) {
   library.addPromptToCollection(collection.id, prompt.id, 3);
   library.setDraft(prompt.id, "draft text", v2.id);
   library.setStarred(prompt.id, true);
+  library.setPromptBlocks(prompt.id, [
+    { description: "Tone", content: "Stay terse.", isActive: true },
+    { content: "unused", isActive: false },
+  ]);
   // Re-fetch so current_version_id reflects setCurrentVersion above.
   return { prompt: library.getPrompt(prompt.id)!, tag, collection };
 }
@@ -245,6 +249,14 @@ describe("import preflight", () => {
     }
   });
   it.each([null, [], 3].map((value) => [value]))("rejects a non-object envelope %s", (input) => rejected(input, "$"));
+  it("rejects a prompts row whose blocks_json is not a valid blocks envelope", () => {
+    const data = bundle();
+    for (const bad of ["{broken", "[]", '{"v":2,"blocks":[]}', '{"v":1,"blocks":[{"content":""}]}']) {
+      const invalid = structuredClone(data);
+      (invalid.tables.prompts[0] as unknown as Record<string, unknown>).blocks_json = bad;
+      rejected(invalid, "tables.prompts[0].blocks_json");
+    }
+  });
   it("requires tables and the supported format version", () => {
     const data = bundle();
     rejected({ ...data, meta: { ...data.meta, formatVersion: 2 } }, "meta.formatVersion");
@@ -347,6 +359,7 @@ describe("export/import", () => {
     expect(imported.title).toBe("Reviewer");
     expect(imported.draft_content).toBe("draft text");
     expect(imported.draft_base_version_id).toBe(prompt.current_version_id);
+    expect(imported.blocks_json).toBe(prompt.blocks_json);
     expect(imported.is_starred).toBe(1);
     expect(imported.current_version_id).toBe(prompt.current_version_id);
 

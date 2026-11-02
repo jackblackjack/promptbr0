@@ -7,6 +7,14 @@ import {
   rebuildPromptSearchIndex,
 } from "./reindex.js";
 import { preflightLibraryImport, type LibraryExport } from "./import-validation.js";
+import {
+  assemblePromptContent,
+  normalizeBlocks,
+  parseBlocksJson,
+  serializeBlocks,
+  type PromptBlock,
+  type PromptBlockInput,
+} from "./blocks.js";
 import type BetterSqlite3 from "better-sqlite3";
 import type {
   BranchRow,
@@ -284,11 +292,14 @@ export class PromptLibrary {
     changeNote?: string;
     /** Optional first note, committed atomically with the prompt. */
     initialNote?: string;
+    /** Optional prompt blocks, stored on the prompt row in the same transaction. */
+    blocks?: PromptBlockInput[];
   }): PromptRow {
     if (!input.title.trim()) throw new Error("Prompt title must not be empty");
     if (input.initialNote !== undefined && !input.initialNote.trim()) {
       throw new Error("Note body must not be empty");
     }
+    const blocks = normalizeBlocks(input.blocks ?? []);
     return this.db.transaction((): PromptRow => {
       const tagIds = new Set(input.tagIds ?? []);
       const tagsByName = new Map<string, string>();
@@ -310,12 +321,13 @@ export class PromptLibrary {
       const ts = now();
       const promptId = randomUUID();
       this.run(
-        `INSERT INTO prompts (id, title, description, icon, is_starred, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+        `INSERT INTO prompts (id, title, description, icon, is_starred, blocks_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
         promptId,
         input.title,
         input.description ?? null,
         input.icon ?? null,
+        blocks.length ? serializeBlocks(blocks) : null,
         ts,
         ts,
       );
@@ -388,6 +400,9 @@ export class PromptLibrary {
         icon: sourcePrompt.icon ?? undefined,
         tagIds: this.listTagsForPrompt(input.promptId).map((tag) => tag.id),
         content: sourceVersion.content,
+        // Blocks are prompt-level metadata: a standalone copy carries them over
+        // (ids stay per-prompt meaningful), so the copy behaves like the source.
+        blocks: parseBlocksJson(sourcePrompt.blocks_json),
       });
       this.run(
         "UPDATE versions SET content_format = ? WHERE id = ?",
@@ -426,6 +441,65 @@ export class PromptLibrary {
         refreshPromptSearchMetadata(this.db, promptId);
       }
       return this.mustGetPrompt(promptId);
+    })();
+  }
+
+  /**
+   * Replaces the prompt's whole block list. Blocks are prompt-level metadata:
+   * no versions, no draft interaction — the updated row simply dirty-captures
+   * into sync like any other prompts-row write. An empty list stores NULL.
+   */
+  setPromptBlocks(promptId: string, blocks: PromptBlockInput[]): PromptRow {
+    const normalized = normalizeBlocks(blocks);
+    this.mustGetPrompt(promptId);
+    this.run(
+      "UPDATE prompts SET blocks_json = ?, updated_at = ? WHERE id = ?",
+      normalized.length ? serializeBlocks(normalized) : null,
+      now(),
+      promptId,
+    );
+    return this.mustGetPrompt(promptId);
+  }
+
+  /**
+   * The one path by which block text ever enters version history: creates a
+   * version whose content is the given base content plus every active block
+   * (the same assembly the run/copy paths use) and removes the baked blocks
+   * from the list, so the assembly can never append the same text twice.
+   * Inactive blocks survive. Atomic: version + list update commit together.
+   * The current pointer follows createVersion's own rules (moves only when
+   * the baked base is the current version).
+   */
+  bakeBlocksIntoNewVersion(input: {
+    promptId: string;
+    branchId: string;
+    baseVersionId: string;
+    /** Base content to assemble from — the editor's current text. */
+    content: string;
+    changeNote?: string;
+    label?: string;
+  }): { version: VersionRow; blocks: PromptBlock[] } {
+    return this.db.transaction(() => {
+      const prompt = this.mustGetPrompt(input.promptId);
+      const blocks = parseBlocksJson(prompt.blocks_json);
+      const active = blocks.filter((block) => block.isActive);
+      if (!active.length) throw new Error("Prompt has no active blocks to bake");
+      const version = this.createVersion({
+        promptId: input.promptId,
+        branchId: input.branchId,
+        baseVersionId: input.baseVersionId,
+        content: assemblePromptContent(input.content, active),
+        changeNote: input.changeNote,
+        label: input.label,
+      });
+      const remaining = blocks.filter((block) => !block.isActive);
+      this.run(
+        "UPDATE prompts SET blocks_json = ?, updated_at = ? WHERE id = ?",
+        remaining.length ? serializeBlocks(remaining) : null,
+        now(),
+        input.promptId,
+      );
+      return { version, blocks: remaining };
     })();
   }
 
@@ -2150,14 +2224,15 @@ export class PromptLibrary {
         );
         this.run(
           `INSERT INTO prompts
-             (id, title, description, icon, draft_content, draft_base_version_id,
+             (id, title, description, icon, draft_content, draft_base_version_id, blocks_json,
               current_version_id, is_starred, created_at, updated_at, deleted_at)
-           VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)`,
           id,
           prompt.title,
           prompt.description,
           prompt.icon,
           prompt.draft_content,
+          prompt.blocks_json,
           prompt.is_starred,
           prompt.created_at,
           prompt.updated_at,

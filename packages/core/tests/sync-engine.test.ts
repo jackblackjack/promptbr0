@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../src/db.js";
 import { formatHlc } from "../src/sync/hlc.js";
+import { parseBlocksJson } from "../src/blocks.js";
 import { PromptLibrary } from "../src/library.js";
 import { SyncEngine, type SyncOp } from "../src/sync/engine.js";
 
@@ -994,6 +995,63 @@ describe("sync engine", () => {
       draft_content: payload.draft_content,
       draft_base_version_id: null,
     });
+  });
+
+  it("applies legacy prompt payloads without blocks_json as null blocks", () => {
+    const origin = rig();
+    const receiver = rig();
+    const payload = {
+      id: "pre-blocks-prompt",
+      title: "Peer before blocks",
+      description: null,
+      icon: null,
+      draft_content: null,
+      draft_base_version_id: null,
+      current_version_id: null,
+      is_starred: 0,
+      created_at: "2026-10-01T00:00:00.000Z",
+      updated_at: "2026-10-01T00:00:00.000Z",
+      deleted_at: null,
+    };
+    origin.db.prepare(
+      `INSERT INTO sync_ops
+       (source_device_id, seq, op_id, table_name, record_id, kind, payload_json, hlc, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "pre-blocks-device",
+      1,
+      "pre-blocks-device-1-prompts-pre-blocks-prompt-upsert",
+      "prompts",
+      payload.id,
+      "upsert",
+      JSON.stringify(payload),
+      formatHlc({ millis: 1_000, counter: 0 }),
+      "2026-10-01T00:00:00.000Z",
+    );
+    expect(receiver.engine.applyRemote(origin.engine.opsSince({}, 1_000_000).ops).applied).toBe(1);
+    expect(receiver.lib.getPrompt(payload.id)).toMatchObject({ blocks_json: null });
+  });
+
+  it("propagates prompt blocks to the peer through the ordinary prompts-row payload", () => {
+    const a = rig();
+    const b = rig();
+    const blocks = [
+      { description: "Tone", content: "Stay terse.", isActive: true },
+      { content: "inactive", isActive: false },
+    ];
+    const prompt = a.lib.createPrompt({ title: "Blocked", content: "base", blocks });
+    a.engine.refineDirty();
+    b.engine.applyRemote(a.engine.opsSince({}, 1_000_000).ops);
+    expect(parseBlocksJson(b.lib.getPrompt(prompt.id)!.blocks_json)).toEqual(
+      parseBlocksJson(prompt.blocks_json),
+    );
+
+    // A block edit rides the same row payload and wins by HLC on the peer.
+    a.lib.setPromptBlocks(prompt.id, [{ content: "replaced", isActive: true }]);
+    a.engine.refineDirty();
+    b.engine.applyRemote(a.engine.opsSince({}, 1_000_000).ops);
+    expect(parseBlocksJson(b.lib.getPrompt(prompt.id)!.blocks_json)).toHaveLength(1);
+    expect(parseBlocksJson(b.lib.getPrompt(prompt.id)!.blocks_json)[0]?.content).toBe("replaced");
   });
 
   it("gives each device a stable distinct id", () => {

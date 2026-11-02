@@ -8,6 +8,11 @@ export interface PromptRow {
   draft_content: string | null;
   /** Saved version whose content the draft edits; null for no/legacy draft. */
   draft_base_version_id: string | null;
+  /**
+   * Optional prompt blocks as one `{ v: 1, blocks: [...] }` envelope (see
+   * blocks.ts); null for no blocks. Parsed only at the read boundary.
+   */
+  blocks_json: string | null;
   current_version_id: string | null;
   is_starred: 0 | 1;
   created_at: string;

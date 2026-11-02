@@ -275,6 +275,15 @@ SELECT rowid, prompt_id, version_id FROM search_index;
     name: "drop-shared-snapshots",
     sql: "DROP TABLE IF EXISTS shared_snapshots;",
   },
+  // Optional prompt blocks ride the prompts row as one JSON column. The CHECK
+  // keeps every write path honest — app writes, sync apply from peers, import
+  // and manual edits cannot store syntactically invalid JSON. The envelope
+  // shape is validated at the boundaries (blocks.ts), not here.
+  {
+    version: 19,
+    name: "prompt-blocks-json",
+    sql: "ALTER TABLE prompts ADD COLUMN blocks_json TEXT CHECK (blocks_json IS NULL OR json_valid(blocks_json));",
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations[migrations.length - 1]!.version;

@@ -606,10 +606,21 @@ describe("migrations", () => {
     const dbPath = tmpDbPath();
     const first = physicalDatabase(dbPath, 9);
     const lib = new PromptLibrary(first.db);
-    const historical = lib.createPrompt({ title: "Historical delete", content: "v1" });
-    const pending = lib.createPrompt({ title: "Pending delete", content: "v1" });
-    const historicalVersion = historical.current_version_id!;
-    const pendingVersion = pending.current_version_id!;
+    // Raw fixture inserts: this schema predates columns the current
+    // createPrompt writes (blocks_json arrives at v19); production always
+    // migrates before any PromptLibrary call.
+    const historical = seedLegacyPrompt(first.db, {
+      id: "historical-del",
+      title: "Historical delete",
+      content: "v1",
+    });
+    const pending = seedLegacyPrompt(first.db, {
+      id: "pending-del",
+      title: "Pending delete",
+      content: "v1",
+    });
+    const historicalVersion = historical.current_version_id;
+    const pendingVersion = pending.current_version_id;
     const orphanVersion = "historical-orphan-version";
     lib.addNote({ promptId: historical.id, versionId: historicalVersion, body: "remove" });
     lib.addRating({ targetType: "prompt", targetId: historical.id, effectiveness: 4 });
@@ -877,7 +888,12 @@ describe("migrations", () => {
     const dbPath = tmpDbPath();
     const seeded = physicalDatabase(dbPath, 10).db;
     const library = new PromptLibrary(seeded);
-    const prompt = library.createPrompt({ title: "Terminal history", content: "v1" });
+    // Raw fixture insert — see the v10 tombstone test above for why.
+    const prompt = seedLegacyPrompt(seeded, {
+      id: "terminal-hist",
+      title: "Terminal history",
+      content: "v1",
+    });
     const tag = library.createTag({ name: "Terminal tag" });
     const collection = library.createCollection({ name: "Terminal collection" });
     library.addTagToPrompt(prompt.id, tag.id);
