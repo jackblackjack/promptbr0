@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
-import { Bold, Braces, ChevronDown, ChevronRight, Blocks, Code, Columns2, Eye, Italic, Layers, Link, List, ListChecks, Loader2, Save, Sparkles, SquarePen, X } from "lucide-react";
+import { Bold, Braces, ChevronDown, ChevronRight, Blocks, Code, Columns2, Eye, Italic, Layers, Link, List, ListChecks, Loader2, Save, Sparkles, SquarePen, Undo2, X } from "lucide-react";
 import { t, tCount } from "../lib/i18n";
 import type { PromptBlockDto, PromptDetail, VersionContentDto, VersionDto } from "../../../shared/ipc.js";
 import { qk, useAppMutation } from "../hooks/use-data";
@@ -15,7 +15,7 @@ import { useResolvedTheme } from "../lib/theme";
 import { clockTime, cx, wordCount } from "../lib/time";
 import { useToast } from "../lib/toast";
 import { useAppState } from "../state/app-state";
-import { SaveVersionDialog } from "./dialogs";
+import { ConfirmDialog, SaveVersionDialog } from "./dialogs";
 import { BlocksEditor, persistableBlocks } from "./BlocksEditor";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ModelPicker, useAvailableModels } from "./model-picker";
@@ -271,6 +271,7 @@ export const EditorTab = memo(function EditorTab({
   const [content, setContent] = useState(initialContent);
   const [savedAt, setSavedAt] = useState<number | null>(draftMatchesVersion ? Date.now() : null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
   const [defaultMode, setDefaultMode] = usePref("editor-mode");
   const [wordWrap] = usePref("word-wrap");
   const resolvedTheme = useResolvedTheme();
@@ -398,6 +399,19 @@ export const EditorTab = memo(function EditorTab({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Discard unsaved edits (an applied AI improvement or manual changes) and
+  // return the editor to the displayed version's saved text. Bumping the edit
+  // generation keeps the draft-sync effect from restoring stale draft content;
+  // the persisted draft is cleared immediately, but only when it belongs to
+  // this version — a draft bound to another base version is not ours to clear.
+  const revertToSaved = () => {
+    draftClearRequestedRef.current = true;
+    localEditGenerationRef.current += 1;
+    contentRef.current = version.content;
+    setContent(version.content);
+    if (draftMatchesVersion) persistDraft.current(null, false);
+  };
 
   const createVersion = useAppMutation(
     (input: { changeNote: string; content: string }) =>
@@ -730,6 +744,18 @@ export const EditorTab = memo(function EditorTab({
               <button
                 type="button"
                 disabled={!dirty || updateVersion.isPending || createVersion.isPending}
+                onClick={() => setDiscardDialogOpen(true)}
+                className={cx(
+                  "flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] font-medium text-ink-dim transition-colors",
+                  "hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                )}
+              >
+                <Undo2 size={12} />
+                {t("editor_tab.discard_changes")}
+              </button>
+              <button
+                type="button"
+                disabled={!dirty || updateVersion.isPending || createVersion.isPending}
                 onClick={() => updateVersion.mutate(contentRef.current)}
                 className={cx(
                   "flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] font-medium text-ink-dim transition-colors",
@@ -765,6 +791,14 @@ export const EditorTab = memo(function EditorTab({
         onOpenChange={setSaveDialogOpen}
         nextLabel={nextLabel}
         onSave={(note) => createVersion.mutate({ changeNote: note, content: contentRef.current })}
+      />
+      <ConfirmDialog
+        open={discardDialogOpen}
+        onOpenChange={setDiscardDialogOpen}
+        title={t("editor_tab.discard_confirm_title")}
+        description={t("editor_tab.discard_confirm_desc", { label: version.displayLabel })}
+        confirmLabel={t("editor_tab.discard_changes")}
+        onConfirm={revertToSaved}
       />
       <SaveVersionDialog
         open={bakeDialogOpen}

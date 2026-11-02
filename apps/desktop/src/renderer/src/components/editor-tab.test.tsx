@@ -685,3 +685,30 @@ describe("EditorTab draft durability", () => {
     );
   });
 });
+
+describe("EditorTab discard changes", () => {
+  it("reverts an applied draft back to the saved version and clears the persisted draft", async () => {
+    renderApp(<EditorTab prompt={promptA} version={versionA} isCurrent />);
+
+    const discard = screen.getByRole("button", { name: "Discard changes" });
+    expect(discard).toBeEnabled();
+
+    fireEvent.click(discard);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Discard changes" })).at(-1)!);
+
+    await waitFor(() => expect(bridge.drafts.set).toHaveBeenCalledWith(promptA.id, null));
+    expect(screen.getByRole("textbox", { name: "Prompt editor" })).toHaveValue(
+      versionA.content,
+    );
+    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+  });
+
+  it("keeps the discard action disabled while the editor matches the saved version", () => {
+    renderApp(
+      <EditorTab prompt={{ ...promptA, draftContent: null }} version={versionA} isCurrent />,
+    );
+
+    expect(screen.getByRole("button", { name: "Discard changes" })).toBeDisabled();
+    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+  });
+});
