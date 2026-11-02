@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -70,5 +70,26 @@ describe("readCollectionFile", () => {
     const huge = " ".repeat(8 * 1024 * 1024 + 1);
     fs.writeFileSync(target, zipSync({ "collection.json": new TextEncoder().encode(huge) }, { level: 0 }));
     expect(() => readCollectionFile(target)).toThrow(CollectionFileError);
+  });
+
+  it("refuses to read an archive beyond the 64 MiB file cap into memory", () => {
+    const target = filePath("sparse.pbrcol");
+    // Sparse file: claims 64 MiB + 1 at near-zero disk cost. It starts with a
+    // ZIP magic so that, if it were ever read, it would pass the magic check
+    // and hit the archive parser — the guard must stop it before that.
+    const fd = fs.openSync(target, "w");
+    fs.writeSync(fd, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    fs.ftruncateSync(fd, 64 * 1024 * 1024 + 1);
+    fs.closeSync(fd);
+    const readSpy = vi.spyOn(fs, "readFileSync");
+    try {
+      expect(() => readCollectionFile(target)).toThrow(CollectionFileError);
+      // The defect being pinned is the unbounded read itself, not the error:
+      // a plain toThrow would pass even if the whole oversized file landed in
+      // memory first. The read must never happen.
+      expect(readSpy).not.toHaveBeenCalled();
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 });

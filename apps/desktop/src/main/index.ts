@@ -684,7 +684,9 @@ function registerIpcHandlers(): void {
     const filePath = result.filePaths[0];
     if (result.canceled || !filePath) return { canceled: true };
     const preview = lib.previewCollectionImport(readCollectionFile(filePath));
-    return { canceled: false, preview: { path: filePath, ...preview } };
+    // path last: the user-picked location must never be overridable by a
+    // same-named field appearing in the core preview payload.
+    return { canceled: false, preview: { ...preview, path: filePath } };
   });
 
   handle(IPC_CHANNELS.collectionImportApply, (_e, payload: unknown): CollectionImportResultDto => {

@@ -14,6 +14,9 @@ export const COLLECTION_FILE_FILTER = { name: "PromptBr0 collection", extensions
 const ENTRY_NAME = "collection.json";
 /** Zip-bomb guard: collections are tiny; 8 MiB of JSON is already absurd. */
 const MAX_ENTRY_BYTES = 8 * 1024 * 1024;
+/** Cap on the archive itself, before any bytes touch memory — the entry cap
+    below only bounds the inflated payload, not a hostile multi-gigabyte file. */
+const MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 /** One user-facing failure class for every container-level problem. */
 export class CollectionFileError extends Error {
@@ -56,6 +59,12 @@ function withAppVersion(payload: CollectionTransferFile, appVersion: string): Co
 export function readCollectionFile(filePath: string): unknown {
   let bytes: Buffer;
   try {
+    // Stat before read: a sparse file can claim gigabytes at zero disk cost,
+    // and readFileSync would pull all of it into memory before the entry cap
+    // below ever gets a look at the (untrusted) inflated size.
+    if (fs.statSync(filePath).size > MAX_FILE_BYTES) {
+      throw new CollectionFileError("Not a valid PromptBr0 collection file");
+    }
     bytes = fs.readFileSync(filePath);
   } catch {
     throw new CollectionFileError("Not a valid PromptBr0 collection file");
