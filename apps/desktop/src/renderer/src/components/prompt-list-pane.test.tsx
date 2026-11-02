@@ -44,6 +44,7 @@ const betaDetail: PromptDetail = {
   currentVersionId: "version-b3",
   draftContent: null,
   draftBaseVersionId: null,
+  blocks: [],
   collectionIds: [],
 };
 

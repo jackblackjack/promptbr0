@@ -1,9 +1,11 @@
 /**
- * Per-prompt AI run preferences (last model selection, last variable values),
- * stored in localStorage alongside the global prefs in lib/prefs.ts. These
- * keys are dynamic (scoped by prompt id), so they live outside PrefsSchema;
- * components keep them in local state and persist on change — no store
- * subscription is needed.
+ * Per-prompt AI run preferences (last model selection), stored in localStorage
+ * alongside the global prefs in lib/prefs.ts. These keys are dynamic (scoped
+ * by prompt id), so they live outside PrefsSchema; components keep them in
+ * local state and persist on change — no store subscription is needed.
+ *
+ * Variable values are deliberately not remembered: since the unified run
+ * window, variable values live in the edited prompt text itself.
  */
 
 export interface ModelRef {
@@ -43,13 +45,6 @@ function asModelRefs(value: unknown): ModelRef[] | null {
   return refs.length === value.length ? refs : null;
 }
 
-function asVariables(value: unknown): Record<string, string> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  return Object.values(value).every((v) => typeof v === "string")
-    ? (value as Record<string, string>)
-    : null;
-}
-
 /** Last model selection used to run this prompt; null when never run. */
 export function getRunModelSelection(promptId: string): ModelRef[] | null {
   return read(`run-models:${promptId}`, asModelRefs);
@@ -57,25 +52,6 @@ export function getRunModelSelection(promptId: string): ModelRef[] | null {
 
 export function setRunModelSelection(promptId: string, refs: ModelRef[]): void {
   write(`run-models:${promptId}`, refs);
-}
-
-/** Last variable values used to run this prompt (prefill for the next run). */
-export function getRunVariables(promptId: string): Record<string, string> {
-  return read(`run-variables:${promptId}`, asVariables) ?? {};
-}
-
-export function setRunVariables(promptId: string, variables: Record<string, string>): void {
-  write(`run-variables:${promptId}`, variables);
-}
-
-/** Keep only supplied values for this template, preserving its first-appearance order. */
-export function projectRunVariables(
-  names: readonly string[],
-  values: Readonly<Record<string, string>>,
-): Record<string, string> {
-  return Object.fromEntries([...new Set(names)]
-    .filter((name) => Object.hasOwn(values, name))
-    .map((name) => [name, values[name]!]));
 }
 
 /** {{variable}} names in a prompt's content, in order of first appearance. */

@@ -40,6 +40,7 @@ const promptA: PromptDetail = {
   currentVersionId: "version-a",
   draftContent: "Cached A draft",
   draftBaseVersionId: "version-a",
+  blocks: [],
   collectionIds: [],
 };
 
@@ -67,6 +68,7 @@ const promptB: PromptDetail = {
   currentVersionId: "version-b",
   draftContent: null,
   draftBaseVersionId: null,
+  blocks: [],
 };
 
 const versionB: VersionContentDto = {
@@ -157,6 +159,7 @@ describe("EditorTab draft durability", () => {
       versionLabel: "v3",
       draftContent: null,
       draftBaseVersionId: null,
+      blocks: [],
     };
     bridge.versions.updateContent.mockResolvedValue(versionA);
     renderApp(

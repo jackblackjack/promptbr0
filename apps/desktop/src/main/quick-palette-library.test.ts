@@ -299,6 +299,131 @@ describe("renderQuickPalette", () => {
   });
 });
 
+describe("prompt blocks in the palette", () => {
+  function createBlockyPrompt() {
+    return library.createPrompt({
+      title: "Blocky",
+      content: "Base body {{name}}",
+      blocks: [
+        { id: "block-active", description: "Tone", content: "Stay terse.", isActive: true },
+        { id: "block-inactive", description: "Extra", content: "Also mention {{extra}}.", isActive: false },
+      ],
+    });
+  }
+
+  it("resolves a template assembled with default block states plus raw base and block meta", () => {
+    const prompt = createBlockyPrompt();
+
+    expect(resolveQuickPalette(library, prompt.id)).toMatchObject({
+      promptId: prompt.id,
+      versionId: prompt.current_version_id,
+      templateContent: "Base body {{name}}\nStay terse.",
+      baseContent: "Base body {{name}}",
+      requiredVariables: ["name"],
+      blocks: [
+        { id: "block-active", description: "Tone", isActive: true },
+        { id: "block-inactive", description: "Extra", isActive: false },
+      ],
+    });
+  });
+
+  it("applies blockOverrides against the raw base at render time", () => {
+    const prompt = createBlockyPrompt();
+
+    expect(
+      renderQuickPalette(library, {
+        sessionId: "session-1",
+        promptId: prompt.id,
+        versionId: prompt.current_version_id!,
+        variables: { name: "Ada", extra: "a footnote" },
+        blockOverrides: { "block-active": false, "block-inactive": true },
+      }),
+    ).toEqual({
+      status: "ready",
+      content: "Base body Ada\nAlso mention a footnote.",
+    });
+  });
+
+  it("accepts variables that only exist inside an override-activated block", () => {
+    const prompt = createBlockyPrompt();
+    const render = (variables: Record<string, string>, blockOverrides?: Record<string, boolean>) =>
+      renderQuickPalette(library, {
+        sessionId: "session-1",
+        promptId: prompt.id,
+        versionId: prompt.current_version_id!,
+        variables,
+        blockOverrides,
+      });
+
+    // The default assembly never mentions {{extra}}, so it is not required…
+    expect(render({ name: "Ada" })).toEqual({
+      status: "ready",
+      content: "Base body Ada\nStay terse.",
+    });
+    // …but activating the block pulls it in: missing first, accepted once supplied.
+    expect(render({ name: "Ada" }, { "block-inactive": true })).toEqual({
+      status: "needs-input",
+      missingVariables: ["extra"],
+    });
+    expect(render({ name: "Ada", extra: "a footnote" }, { "block-inactive": true })).toEqual({
+      status: "ready",
+      content: "Base body Ada\nStay terse.\nAlso mention a footnote.",
+    });
+  });
+
+  it("ignores unknown override ids instead of erroring or injecting text", () => {
+    const prompt = createBlockyPrompt();
+
+    expect(
+      renderQuickPalette(library, {
+        sessionId: "session-1",
+        promptId: prompt.id,
+        versionId: prompt.current_version_id!,
+        variables: { name: "Ada" },
+        blockOverrides: { "stale-deleted-block": true },
+      }),
+    ).toEqual({ status: "ready", content: "Base body Ada\nStay terse." });
+  });
+
+  it("invalidates stored previews when default assembly changes, not on inactive edits", () => {
+    const prompt = createBlockyPrompt();
+    const selection = resolveQuickPalette(library, prompt.id);
+
+    // Editing an inactive block leaves the default assembly untouched…
+    library.setPromptBlocks(prompt.id, [
+      { id: "block-active", description: "Tone", content: "Stay terse.", isActive: true },
+      { id: "block-inactive", description: "Reworded", content: "Also mention {{extra}}.", isActive: false },
+    ]);
+    let current = assertQuickPaletteSelectionCurrent(library, {
+      promptId: prompt.id,
+      versionId: selection.versionId,
+    });
+    expect(current.templateContent).toBe(selection.templateContent);
+
+    // …while any change feeding the default assembly (content or default
+    // state) must fail the copy-time freshness check in quick-palette.ts.
+    library.setPromptBlocks(prompt.id, [
+      { id: "block-active", description: "Tone", content: "Stay VERY terse.", isActive: true },
+      { id: "block-inactive", description: "Reworded", content: "Also mention {{extra}}.", isActive: false },
+    ]);
+    current = assertQuickPaletteSelectionCurrent(library, {
+      promptId: prompt.id,
+      versionId: selection.versionId,
+    });
+    expect(current.templateContent).not.toBe(selection.templateContent);
+
+    library.setPromptBlocks(prompt.id, [
+      { id: "block-active", description: "Tone", content: "Stay VERY terse.", isActive: false },
+      { id: "block-inactive", description: "Reworded", content: "Also mention {{extra}}.", isActive: false },
+    ]);
+    current = assertQuickPaletteSelectionCurrent(library, {
+      promptId: prompt.id,
+      versionId: selection.versionId,
+    });
+    expect(current.templateContent).toBe("Base body {{name}}");
+  });
+});
+
 describe("quickPaletteFailure", () => {
   it("accepts the exact rendered limit through core and palette IPC", () => {
     const prompt = library.createPrompt({ title: "Exact", content: "{{a}}".repeat(10) });

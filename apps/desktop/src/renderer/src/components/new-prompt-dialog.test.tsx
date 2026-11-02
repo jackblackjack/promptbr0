@@ -77,6 +77,32 @@ async function requestGenerate() {
   return user;
 }
 
+describe("NewPromptDialog blocks section", () => {
+  it("creates a prompt with the filled blocks and drops empty ones", async () => {
+    const onCreate = vi.fn();
+    const queryClient = createTestQueryClient();
+    renderApp(<NewPromptDialog open onOpenChange={vi.fn()} allTags={[]} onCreate={onCreate} />, {
+      queryClient,
+    });
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText(/code review — security focus/i), "My prompt");
+    await user.click(screen.getByRole("button", { name: /add block/i }));
+
+    // One empty block: expanded automatically, dropped on submit when untouched.
+    await user.type(screen.getByLabelText("Block 1 description"), "Tone");
+    await user.type(screen.getByLabelText("Block 1 text"), "Stay terse.");
+    await user.click(screen.getByRole("button", { name: /add block/i }));
+
+    await user.click(screen.getByRole("button", { name: /create prompt/i }));
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    const input = onCreate.mock.calls[0]![0] as { blocks: Array<{ description: string; content: string; isActive: boolean }> };
+    expect(input.blocks).toHaveLength(1);
+    expect(input.blocks[0]).toMatchObject({ description: "Tone", content: "Stay terse.", isActive: true });
+  });
+});
+
 describe("NewPromptDialog generate flow", () => {
   it("keeps the user's content when the overwrite confirm is declined", async () => {
     const user = await requestGenerate();

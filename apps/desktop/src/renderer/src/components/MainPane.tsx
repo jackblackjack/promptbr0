@@ -16,7 +16,6 @@ import {
   Play,
   RotateCcw,
 
-  Sparkles,
   Star,
   Trash2,
 } from "lucide-react";
@@ -24,12 +23,8 @@ import type { AiRunInput, PromptDetail, VersionDto } from "../../../shared/ipc.j
 import { aiRunProgressEventSchema } from "../../../shared/ipc.js";
 import { useAppMutation, useNotes, useRunGroups, useRuns, useVersionContent, useVersions } from "../hooks/use-data";
 import {
-  extractVariableNames,
   getRunModelSelection,
-  getRunVariables,
-  projectRunVariables,
   setRunModelSelection,
-  setRunVariables,
   type ModelRef,
 } from "../lib/ai-prefs";
 import { togglePanel } from "../lib/panels";
@@ -45,11 +40,10 @@ import { NotesTab } from "./NotesTab";
 import { ResultsTab } from "./ResultsTab";
 import { fromRunResult, fromStoredGroup, placeholderGroup, RunCompareView, type CompareGroup, type CompareRun } from "./RunCompareView";
 
-import { ModelPicker, modelRefKey, useAvailableModels } from "./model-picker";
+import { modelRefKey, useAvailableModels } from "./model-picker";
 import { MoveToCollectionDialog } from "./MoveToCollectionDialog";
-import { RunVariablesDialog, GenerateResultDialog } from "./run-controls";
+import { RunWindow } from "./run-controls";
 import { TagEditor } from "./TagEditor";
-import { renderPromptVariablesBounded } from "../lib/variables.js";
 import { EmptyState, Spinner } from "./ui";
 import { t } from "../lib/i18n";
 
@@ -193,9 +187,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   const [comparePair, setComparePair] = useState<{ base: VersionDto; other: VersionDto } | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<VersionDto | null>(null);
   const [duplicatePromptSource, setDuplicatePromptSource] = useState<VersionDto | null>(null);
-  const [generateOpen, setGenerateOpen] = useState(false);
-  const [generateContent, setGenerateContent] = useState<string | null>(null);
-  const [generatePending, setGeneratePending] = useState(false);
+  const [runWindowOpen, setRunWindowOpen] = useState(false);
 
   useEffect(() => {
     setActiveTab("prompt");
@@ -252,13 +244,6 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   const [modelSelection, setModelSelection] = useState<ModelRef[]>(
     () => getRunModelSelection(prompt.id) ?? [],
   );
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [variablesOpen, setVariablesOpen] = useState(false);
-  const [variableNames, setVariableNames] = useState<string[]>([]);
-  // Captured when the variables dialog opens — a stable prop, so focus
-  // refetches no longer reset values already typed into the dialog.
-  const [variableInitialValues, setVariableInitialValues] = useState<Record<string, string>>({});
-  const [pendingRefs, setPendingRefs] = useState<ModelRef[]>([]);
   const [compare, setCompare] = useState<
     { kind: "fresh"; group: CompareGroup } | { kind: "history"; runGroupId: string } | null
   >(null);
@@ -405,13 +390,12 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
   /**
    * Starts a run: opens the compare view immediately with placeholder
    * columns, then fires the ai:run invoke (resolves when ALL models settle;
-   * live progress arrives via events meanwhile).
+   * live progress arrives via events meanwhile). The content is the final
+   * text assembled in the run window — variables travel inside it (unfilled
+   * ones go to the model as-is), so no separate substitution happens here.
    */
-  const beginRun = (refs: ModelRef[], variables: Record<string, string>) => {
+  const beginRun = (refs: ModelRef[], content: string) => {
     const requestId = crypto.randomUUID();
-    const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
-    const currentVariables = projectRunVariables(extractVariableNames(content), variables);
-    setRunVariables(prompt.id, currentVariables);
     const withNames = refs.map((ref) => ({
       ...ref,
       providerName:
@@ -432,54 +416,26 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       ...(viewingVersion ? { versionId: viewingVersion.id } : {}),
       content,
       modelRefs: refs,
-      variables: currentVariables,
+      variables: {},
     });
   };
 
   /**
-   * Runs the current (possibly unsaved) content against the given models.
-   * With `skipVariables`, reuses the last variable values (rerun path);
-   * otherwise {{variables}} in the content open the variables dialog first.
+   * Opens the unified run window — the single entry point for runs. With
+   * `refs` (rerun path), re-validates and adopts that selection first.
    */
-  const startRun = (refs: ModelRef[], skipVariables = false) => {
+  const openRunWindow = (refs?: ModelRef[]) => {
     if (availableModels.length === 0) {
       toast(t("main_pane.no_models"), "error");
       openSettings("ai");
       return;
     }
-    const valid = refs.filter((ref) => availableModels.some((m) => modelRefKey(m) === modelRefKey(ref)));
-    if (valid.length === 0) {
-      setPickerOpen(true);
-      return;
+    if (refs) {
+      const valid = refs.filter((ref) => availableModels.some((m) => modelRefKey(m) === modelRefKey(ref)));
+      setModelSelection(valid);
+      setRunModelSelection(prompt.id, valid);
     }
-    setModelSelection(valid);
-    setRunModelSelection(prompt.id, valid);
-    const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
-    const names = extractVariableNames(content);
-    if (!skipVariables && names.length > 0) {
-      setPendingRefs(valid);
-      setVariableNames(names);
-      setVariableInitialValues(projectRunVariables(names, getRunVariables(prompt.id)));
-      setVariablesOpen(true);
-      return;
-    }
-    beginRun(valid, projectRunVariables(names, getRunVariables(prompt.id)));
-  };
-
-  /** Extract variables, open the variable dialog if needed, then show the substituted result. */
-  const startGenerate = () => {
-    const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
-    const names = extractVariableNames(content);
-    if (names.length > 0) {
-      setVariableNames(names);
-      setVariableInitialValues(projectRunVariables(names, getRunVariables(prompt.id)));
-      setGeneratePending(true);
-      setVariablesOpen(true);
-      return;
-    }
-    const substituted = renderPromptVariablesBounded(content, {});
-    setGenerateContent(substituted);
-    setGenerateOpen(true);
+    setRunWindowOpen(true);
   };
 
   // Memoized: a fresh object every render would reset RunCompareView's
@@ -646,28 +602,6 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
             <>
               <button
                 type="button"
-                onClick={() => startGenerate()}
-                disabled={!isViewingCurrent && !versionContent}
-                title={t("main_pane.generate")}
-                className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Sparkles size={12} />
-                {t("main_pane.generate")}
-              </button>
-              <ModelPicker
-                multi
-                selection={modelSelection}
-                onChange={(next) => {
-                  setModelSelection(next);
-                  setRunModelSelection(prompt.id, next);
-                }}
-                recents={getRunModelSelection(prompt.id) ?? []}
-                open={pickerOpen}
-                onOpenChange={setPickerOpen}
-                disabled={runModels.isPending}
-              />
-              <button
-                type="button"
                 onClick={() => {
                   if (runModels.isPending) {
                     setCompare(null);
@@ -676,7 +610,7 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
                     );
                     return;
                   }
-                  startRun(modelSelection);
+                  openRunWindow();
                 }}
                 disabled={runModels.isPending && live === null}
                 title={runModels.isPending ? t("main_pane.open_running_eval") : t("main_pane.run_with_models")}
@@ -910,13 +844,21 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
       </Group>
 
       {/* Dialogs */}
-      {generateContent !== null && (
-        <GenerateResultDialog
-          open={generateOpen}
-          onOpenChange={setGenerateOpen}
-          content={generateContent}
-        />
-      )}
+      <RunWindow
+        open={runWindowOpen}
+        onOpenChange={setRunWindowOpen}
+        baseContent={liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? ""}
+        blocks={prompt.blocks}
+        selection={modelSelection}
+        onSelectionChange={(next) => {
+          setModelSelection(next);
+          setRunModelSelection(prompt.id, next);
+        }}
+        recents={getRunModelSelection(prompt.id) ?? []}
+        running={runModels.isPending}
+        runLabel={runLabel}
+        onRun={(content) => beginRun(modelSelection, content)}
+      />
       <NameDialog
         open={renameOpen}
         onOpenChange={setRenameOpen}
@@ -1032,28 +974,6 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
         base={comparePair?.base ?? null}
         other={comparePair?.other ?? null}
       />
-      <RunVariablesDialog
-        open={variablesOpen}
-        onOpenChange={(open) => {
-          setVariablesOpen(open);
-          if (!open) setGeneratePending(false);
-        }}
-        names={variableNames}
-        initialValues={variableInitialValues}
-        submitLabel={generatePending ? t("main.generate") : t("main.run")}
-        onSubmit={(values) => {
-          if (generatePending) {
-            const content = liveContentRef.current ?? viewingDraftContent ?? versionContent?.content ?? "";
-            const substituted = renderPromptVariablesBounded(content, values);
-            setGenerateContent(substituted);
-            setGenerateOpen(true);
-            setGeneratePending(false);
-            setRunVariables(prompt.id, projectRunVariables(extractVariableNames(content), values));
-          } else {
-            beginRun(pendingRefs, values);
-          }
-        }}
-      />
       <RunCompareView
         group={activeGroup}
         promptId={prompt.id}
@@ -1078,11 +998,11 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
           setLive((current) => (current ? { ...current, cancelling: true } : current));
           cancelRun.mutate({ requestId, runGroupId });
         }}
-        onRerun={(refs) => startRun(refs, true)}
+        onRerun={(refs) => openRunWindow(refs)}
         onChangeModels={() => {
           setCompare(null);
           setLive(null);
-          setPickerOpen(true);
+          setRunWindowOpen(true);
         }}
       />
     </>

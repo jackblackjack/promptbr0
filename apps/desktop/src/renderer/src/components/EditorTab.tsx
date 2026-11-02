@@ -4,9 +4,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
-import { Bold, Braces, Code, Columns2, Eye, Italic, Link, List, ListChecks, Loader2, Save, Sparkles, SquarePen, X } from "lucide-react";
+import { Bold, Braces, ChevronDown, ChevronRight, Blocks, Code, Columns2, Eye, Italic, Layers, Link, List, ListChecks, Loader2, Save, Sparkles, SquarePen, X } from "lucide-react";
 import { t, tCount } from "../lib/i18n";
-import type { PromptDetail, VersionContentDto, VersionDto } from "../../../shared/ipc.js";
+import type { PromptBlockDto, PromptDetail, VersionContentDto, VersionDto } from "../../../shared/ipc.js";
 import { qk, useAppMutation } from "../hooks/use-data";
 import { getPref, usePref } from "../lib/prefs";
 import type { ModelRef } from "../lib/ai-prefs";
@@ -16,6 +16,7 @@ import { clockTime, cx, wordCount } from "../lib/time";
 import { useToast } from "../lib/toast";
 import { useAppState } from "../state/app-state";
 import { SaveVersionDialog } from "./dialogs";
+import { BlocksEditor, persistableBlocks } from "./BlocksEditor";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ModelPicker, useAvailableModels } from "./model-picker";
 
@@ -392,6 +393,7 @@ export const EditorTab = memo(function EditorTab({
   useEffect(() => {
     return () => {
       saveDraft.current();
+      flushBlocks.current();
       if (liveContentRef) liveContentRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -472,6 +474,83 @@ export const EditorTab = memo(function EditorTab({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [createVersion.isPending, dirty, editable, updateVersion.isPending]);
 
+  // Optional blocks are prompt-level metadata, not editor draft content: every
+  // change is persisted via prompt:set-blocks (debounced while typing) instead
+  // of riding the draft system. lastSentBlocksRef distinguishes our own write
+  // echoing back through the query cache from a genuine remote/bake change.
+  const [blocks, setBlocksState] = useState<PromptBlockDto[]>(prompt.blocks);
+  const blocksRef = useRef(blocks);
+  blocksRef.current = blocks;
+  const lastSentBlocksRef = useRef(JSON.stringify(prompt.blocks));
+  const blocksPersistTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const incoming = JSON.stringify(prompt.blocks);
+    if (incoming === lastSentBlocksRef.current) return;
+    lastSentBlocksRef.current = incoming;
+    setBlocksState(prompt.blocks);
+  }, [prompt.blocks]);
+
+  const setBlocksMutation = useAppMutation(
+    (payload: PromptBlockDto[]) => window.promptbr0.prompts.setBlocks(prompt.id, payload),
+    {
+      invalidate: false,
+      invalidateKeys: [qk.prompt(prompt.id)],
+      onSuccess: (_result, payload) => {
+        lastSentBlocksRef.current = JSON.stringify(payload);
+      },
+    },
+  );
+
+  const flushBlocks = useRef<() => void>(() => undefined);
+  flushBlocks.current = () => {
+    if (blocksPersistTimerRef.current !== null) {
+      window.clearTimeout(blocksPersistTimerRef.current);
+      blocksPersistTimerRef.current = null;
+    }
+    if (!editable) return;
+    const payload = persistableBlocks(blocksRef.current);
+    const json = JSON.stringify(payload);
+    if (json === lastSentBlocksRef.current) return;
+    setBlocksMutation.mutate(payload);
+  };
+
+  const scheduleBlocksPersist = (next: PromptBlockDto[]) => {
+    setBlocksState(next);
+    if (blocksPersistTimerRef.current !== null) window.clearTimeout(blocksPersistTimerRef.current);
+    blocksPersistTimerRef.current = window.setTimeout(() => {
+      blocksPersistTimerRef.current = null;
+      flushBlocks.current();
+    }, 400);
+  };
+
+  const [blocksOpen, setBlocksOpen] = useState(prompt.blocks.length > 0);
+  const [bakeDialogOpen, setBakeDialogOpen] = useState(false);
+  const bakeMutation = useAppMutation(
+    (input: { changeNote: string }) =>
+      window.promptbr0.prompts.bakeBlocks({
+        promptId: prompt.id,
+        branchId: version.branchId,
+        baseVersionId: version.id,
+        content: contentRef.current,
+        ...(input.changeNote ? { changeNote: input.changeNote } : {}),
+      }),
+    {
+      onSuccess: ({ version: created, blocks: remaining }) => {
+        // Same reconciliation as "Save as new version": the editor keeps the
+        // raw text; the freshly baked version becomes its draft base.
+        draftClearRequestedRef.current = false;
+        draftBaseVersionIdRef.current = created.id;
+        persistDraft.current(contentRef.current, true, localEditGenerationRef.current, created.id);
+        lastSentBlocksRef.current = JSON.stringify(remaining);
+        setBlocksState(remaining);
+        toast(`Saved as ${created.displayLabel}`);
+        onVersionCreated?.(created);
+      },
+    },
+  );
+  const hasActiveBlocks = persistableBlocks(blocks).some((block) => block.isActive);
+
   const editor = (
     <CodeMirror
       value={content}
@@ -498,6 +577,12 @@ export const EditorTab = memo(function EditorTab({
       }}
     />
   );
+
+  const nextLabel = isInitialPlaceholder
+    ? "v1"
+    : version.branchName === "main"
+      ? `v${nextVersionNumber ?? version.number + 1}`
+      : `${version.branchName} v${nextVersionNumber ?? version.number + 1}`;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -575,7 +660,48 @@ export const EditorTab = memo(function EditorTab({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-line px-3 py-1.5">
+      <div className="shrink-0 border-t border-line">
+        <div className="flex items-center gap-2 px-3 py-1">
+          <button
+            type="button"
+            onClick={() => setBlocksOpen((open) => !open)}
+            aria-expanded={blocksOpen}
+            className="flex items-center gap-1.5 rounded text-[11px] text-ink-dim transition-colors hover:text-ink"
+          >
+            {blocksOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            <Blocks size={12} className="text-accent" />
+            {t("blocks.title")}
+            <span className="tabular-nums text-ink-faint">({blocks.length})</span>
+          </button>
+          {editable && (
+            <button
+              type="button"
+              onClick={() => {
+                flushBlocks.current();
+                setBakeDialogOpen(true);
+              }}
+              disabled={!hasActiveBlocks || bakeMutation.isPending}
+              title={t("blocks.bake_hint")}
+              className={cx(
+                "ml-auto flex items-center gap-1.5 rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-dim transition-colors",
+                "hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+              )}
+            >
+              {bakeMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : <Layers size={11} />}
+              {t("blocks.bake_button")}
+            </button>
+          )}
+        </div>
+        {blocksOpen && (
+          <div className="px-3 pb-2">
+            <p className="mb-1.5 text-[10px] leading-relaxed text-ink-faint">{t("blocks.hint")}</p>
+            <BlocksEditor blocks={blocks} onChange={scheduleBlocksPersist} disabled={!editable} />
+          </div>
+        )}
+      </div>
+
+      {/* The blocks panel above always renders and provides the separator. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-1.5">
         <span className="min-w-0 truncate text-[11px] text-ink-faint">
           {editable
             ? dirty
@@ -637,14 +763,16 @@ export const EditorTab = memo(function EditorTab({
       <SaveVersionDialog
         open={saveDialogOpen}
         onOpenChange={setSaveDialogOpen}
-        nextLabel={
-          isInitialPlaceholder
-            ? "v1"
-            : version.branchName === "main"
-              ? `v${nextVersionNumber ?? version.number + 1}`
-              : `${version.branchName} v${nextVersionNumber ?? version.number + 1}`
-        }
+        nextLabel={nextLabel}
         onSave={(note) => createVersion.mutate({ changeNote: note, content: contentRef.current })}
+      />
+      <SaveVersionDialog
+        open={bakeDialogOpen}
+        onOpenChange={setBakeDialogOpen}
+        nextLabel={nextLabel}
+        title={t("blocks.bake_dialog_title", { label: nextLabel })}
+        warning={t("blocks.bake_warning")}
+        onSave={(note) => bakeMutation.mutate({ changeNote: note })}
       />
       <ImproveDialog
         open={improveOpen}

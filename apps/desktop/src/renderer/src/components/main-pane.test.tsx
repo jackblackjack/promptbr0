@@ -15,7 +15,7 @@ import { installMockBridge, type MockBridge } from "../test/mock-bridge";
 import { createTestQueryClient, renderApp } from "../test/render";
 import { useAppState } from "../state/app-state";
 import { MainPane } from "./MainPane";
-import { getRunVariables, setRunVariables } from "../lib/ai-prefs";
+import { getRunModelSelection, setRunModelSelection } from "../lib/ai-prefs";
 
 vi.mock("@uiw/react-codemirror", () => ({
   default: ({
@@ -61,6 +61,7 @@ const prompt: PromptDetail = {
   currentVersionId: "v-1",
   draftContent: null,
   draftBaseVersionId: null,
+  blocks: [],
   collectionIds: [],
 };
 
@@ -156,11 +157,14 @@ beforeEach(() => {
   );
 });
 
-/** Selects model-live in the picker and clicks Run. */
+/** Opens the run window, selects model-live in its picker and runs it. */
 async function startRun(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Run" }));
   await user.click(await screen.findByRole("button", { name: /select models/i }));
   await user.click(await screen.findByRole("option", { name: /model-live/i }));
-  await user.click(screen.getByRole("button", { name: "Run" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Generated prompt" })).getByRole("button", { name: "Run" }),
+  );
 }
 
 function HistoricalVersionControl({ versionId }: { versionId: string }) {
@@ -273,39 +277,28 @@ describe("MainPane live run progress", () => {
     },
   );
 
-  it("drops stale variable keys before dialog submission, persistence and invocation", async () => {
+  it("runs the assembled window text as typed and closes the window", async () => {
     const user = userEvent.setup();
-    setRunVariables(prompt.id, { stale: "secret", name: "Ada" });
-    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Hi {{name}}", draftBaseVersionId: "v-1" }} />);
-    await startRun(user);
-    const dialog = await screen.findByRole("dialog", { name: "Run variables" });
-    expect(within(dialog).getByRole("textbox")).toHaveValue("Ada");
+    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Base draft with {{name}}", draftBaseVersionId: "v-1" }} />);
+
+    await user.click(await screen.findByRole("button", { name: "Run" }));
+    await user.click(await screen.findByRole("button", { name: /select models/i }));
+    await user.click(await screen.findByRole("option", { name: /model-live/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Generated prompt" });
+    // The full prompt is editable; variables stay inline in the text.
+    const textarea = within(dialog).getByRole("textbox");
+    expect(textarea).toHaveValue("Base draft with {{name}}");
+    await user.type(textarea, " filled");
+
     await user.click(within(dialog).getByRole("button", { name: "Run" }));
-    await waitFor(() => expect(bridge.ai.run).toHaveBeenCalledWith(expect.objectContaining({ variables: { name: "Ada" } })));
-    expect(getRunVariables(prompt.id)).toEqual({ name: "Ada" });
-  });
 
-  it("drops stale variable keys on the no-dialog path", async () => {
-    const user = userEvent.setup();
-    setRunVariables(prompt.id, { stale: "secret" });
-    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Plain", draftBaseVersionId: "v-1" }} />);
-    await startRun(user);
-    await waitFor(() => expect(bridge.ai.run).toHaveBeenCalledWith(expect.objectContaining({ variables: {} })));
-    expect(getRunVariables(prompt.id)).toEqual({});
-  });
-
-  it("projects the latest saved values before rerunning without a dialog", async () => {
-    const user = userEvent.setup();
-    setRunVariables(prompt.id, { name: "Ada" });
-    renderApp(<MainPane prompt={{ ...prompt, draftContent: "Hi {{name}}", draftBaseVersionId: "v-1" }} />);
-    await startRun(user);
-    await user.click(within(await screen.findByRole("dialog", { name: "Run variables" })).getByRole("button", { name: "Run" }));
-    await waitFor(() => expect(bridge.ai.run).toHaveBeenCalledTimes(1));
-    await act(async () => finishRun(freshGroup));
-    setRunVariables(prompt.id, { stale: "secret", name: "Grace" });
-    await user.click(screen.getByRole("button", { name: /re.?run/i }));
-    await waitFor(() => expect(bridge.ai.run).toHaveBeenLastCalledWith(expect.objectContaining({ variables: { name: "Grace" } })));
-    expect(getRunVariables(prompt.id)).toEqual({ name: "Grace" });
+    // The edited text goes to the run as-is, with no separate variable map.
+    await waitFor(() =>
+      expect(bridge.ai.run).toHaveBeenCalledWith(
+        expect.objectContaining({ content: "Base draft with {{name}} filled", variables: {} }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Generated prompt" })).toBeNull());
   });
   it("drives the live compare view through queued → streaming → completed", async () => {
     const user = userEvent.setup();

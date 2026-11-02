@@ -28,6 +28,7 @@ const prompt: PromptDetail = {
   currentVersionId: "v-2",
   draftContent: null,
   draftBaseVersionId: null,
+  blocks: [],
   collectionIds: [],
 };
 

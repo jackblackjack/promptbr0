@@ -3,13 +3,14 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { t } from "../lib/i18n";
-import type { CollectionDto, CollectionTreeDto, RatingAddInput, TagDto } from "../../../shared/ipc.js";
+import type { CollectionDto, CollectionTreeDto, PromptBlockDto, RatingAddInput, TagDto } from "../../../shared/ipc.js";
 import { useAppMutation } from "../hooks/use-data";
 import type { ModelRef } from "../lib/ai-prefs";
 import { userErrorMessage } from "../lib/errors";
 import { cx } from "../lib/time";
 import { useToast } from "../lib/toast";
 import { useAppState } from "../state/app-state";
+import { BlocksEditor, persistableBlocks } from "./BlocksEditor";
 import { ModelPicker, useAvailableModels } from "./model-picker";
 import { colorForName, StarRatingInput } from "./ui";
 
@@ -184,12 +185,13 @@ export function NewPromptDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   allTags: TagDto[];
-  onCreate: (input: { title: string; description: string; content: string; tagIds: string[] }) => void;
+  onCreate: (input: { title: string; description: string; content: string; tagIds: string[]; blocks: PromptBlockDto[] }) => void;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [content, setContent] = useState("");
   const [tagIds, setTagIds] = useState<string[]>([]);
+  const [blocks, setBlocks] = useState<PromptBlockDto[]>([]);
   const { toast } = useToast();
   const { openSettings } = useAppState();
   const availableModels = useAvailableModels();
@@ -206,6 +208,7 @@ export function NewPromptDialog({
       setDescription("");
       setContent("");
       setTagIds([]);
+      setBlocks([]);
       setGenerateOpen(false);
       setGenDescription("");
       setGenModel(availableModels[0] ?? null);
@@ -255,7 +258,7 @@ export function NewPromptDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!title.trim()) return;
-    onCreate({ title: title.trim(), description: description.trim(), content, tagIds });
+    onCreate({ title: title.trim(), description: description.trim(), content, tagIds, blocks: persistableBlocks(blocks) });
     onOpenChange(false);
   };
 
@@ -346,6 +349,13 @@ export function NewPromptDialog({
             className={cx(inputClass, "min-h-[8rem] flex-1 font-mono text-xs leading-relaxed")}
           />
         </div>
+        <div className="space-y-1.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-xs font-medium text-ink-dim">{t("blocks.title")}</span>
+            <span className="text-[10px] text-ink-faint">{t("blocks.hint")}</span>
+          </div>
+          <BlocksEditor blocks={blocks} onChange={setBlocks} />
+        </div>
         {allTags.length > 0 && (
           <div className="space-y-1.5">
             <span className="text-xs font-medium text-ink-dim">{t("prompt_list.tags")}</span>
@@ -412,11 +422,17 @@ export function SaveVersionDialog({
   onOpenChange,
   nextLabel,
   onSave,
+  title,
+  warning,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   nextLabel: string;
   onSave: (changeNote: string) => void;
+  /** Overrides the default "save version as {{label}}" title (e.g. bake flow). */
+  title?: string;
+  /** Warning callout rendered above the change-note field (e.g. bake semantics). */
+  warning?: ReactNode;
 }) {
   const [note, setNote] = useState("");
   useEffect(() => {
@@ -424,7 +440,7 @@ export function SaveVersionDialog({
   }, [open]);
 
   return (
-    <DialogShell open={open} onOpenChange={onOpenChange} title={t("dialog.save_version_as", { label: nextLabel })}>
+    <DialogShell open={open} onOpenChange={onOpenChange} title={title ?? t("dialog.save_version_as", { label: nextLabel })}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -433,6 +449,11 @@ export function SaveVersionDialog({
         }}
         className="space-y-4"
       >
+        {warning && (
+          <div className="rounded-md border border-danger/20 bg-danger-soft px-2.5 py-2 text-[12px] leading-relaxed text-ink-dim">
+            {warning}
+          </div>
+        )}
         <label className="block space-y-1.5">
           <span className="text-xs font-medium text-ink">
             {t("dialog.what_changed")} <span className="font-normal text-ink-faint">{t("dialog.what_changed_hint")}</span>

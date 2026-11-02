@@ -29,6 +29,7 @@ export function QuickPalette() {
   const [selection, setSelection] = useState<QuickPaletteSelection | null>(null);
   const [resolveStatus, setResolveStatus] = useState<RequestStatus>("idle");
   const [variables, setVariables] = useState<Record<string, string>>({});
+  const [blockOverrides, setBlockOverrides] = useState<Record<string, boolean>>({});
   const [preview, setPreview] = useState<Extract<QuickPalettePreview, { status: "ready" }> | null>(null);
   const [missingVariables, setMissingVariables] = useState<string[]>([]);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -56,6 +57,7 @@ export function QuickPalette() {
     setSelection(null);
     setResolveStatus("idle");
     setVariables({});
+    setBlockOverrides({});
     setPreview(null);
     setMissingVariables([]);
     setDetailError(null);
@@ -180,6 +182,7 @@ export function QuickPalette() {
         }
         setSelection(result.value);
         setVariables(Object.fromEntries(result.value.requiredVariables.map((name) => [name, ""])));
+        setBlockOverrides({});
         setResolveStatus("ready");
       })
       .catch(() => {
@@ -206,6 +209,7 @@ export function QuickPalette() {
         promptId: selection.promptId,
         versionId: selection.versionId,
         variables,
+        blockOverrides,
       })
       .then((result) => {
         if (
@@ -232,7 +236,7 @@ export function QuickPalette() {
         if (renderGeneration.current !== generation || sessionRef.current !== sessionId) return;
         setDetailError(t("prompt_list.preview_could_not_render"));
       });
-  }, [renderRetry, resolveStatus, selection, sessionId, variables]);
+  }, [blockOverrides, renderRetry, resolveStatus, selection, sessionId, variables]);
 
   useEffect(() => {
     if (selection?.requiredVariables.length === 0 && preview && !stale) {
@@ -247,6 +251,14 @@ export function QuickPalette() {
     setDetailError(null);
     setStale(false);
     setVariables((current) => ({ ...current, [name]: value }));
+  };
+
+  const toggleBlock = (blockId: string, next: boolean) => {
+    renderGeneration.current += 1;
+    setPreview(null);
+    setMissingVariables([]);
+    setStale(false);
+    setBlockOverrides((current) => ({ ...current, [blockId]: next }));
   };
 
   const copyPreview = useCallback(async () => {
@@ -309,6 +321,7 @@ export function QuickPalette() {
     setSelection(null);
     setResolveStatus("idle");
     setVariables({});
+    setBlockOverrides({});
     setPreview(null);
     setMissingVariables([]);
     setDetailError(null);
@@ -489,6 +502,31 @@ export function QuickPalette() {
             </div>
           ) : selection ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+              {selection.blocks.length > 0 && (
+                <div
+                  role="group"
+                  aria-label={t("quick_palette.blocks-group")}
+                  className="flex flex-wrap gap-1.5"
+                >
+                  {selection.blocks.map((block) => (
+                    <label
+                      key={block.id}
+                      title={block.description || undefined}
+                      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-line-strong px-2 py-1 text-[11px] text-ink-dim hover:bg-hover focus-within:ring-1 focus-within:ring-accent"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={blockOverrides[block.id] ?? block.isActive}
+                        onChange={(event) => toggleBlock(block.id, event.target.checked)}
+                        className="accent-accent"
+                      />
+                      <span className="max-w-56 truncate">
+                        {block.description || t("quick_palette.unnamed-block")}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
               {selection.requiredVariables.length > 0 && (
                 <div className="grid gap-2">
                   {selection.requiredVariables.map((name, index) => (

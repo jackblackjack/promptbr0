@@ -42,6 +42,8 @@ import {
   promptCreateSchema,
   promptDuplicateSchema,
   promptListSchema,
+  promptBakeBlocksSchema,
+  promptSetBlocksSchema,
   promptUpdateSchema,
   ratingAddSchema,
   ratingAveragesSchema,
@@ -86,6 +88,7 @@ import {
   toBranchDto,
   toCollectionDto,
   toNoteDto,
+  toPromptBlocks,
   toPromptSummary,
   toRatingDto,
   toRunDto,
@@ -293,6 +296,7 @@ function toDetail(prompt: PromptRow): PromptDetail {
     currentVersionId: prompt.current_version_id,
     draftContent: prompt.draft_content,
     draftBaseVersionId: prompt.draft_base_version_id,
+    blocks: toPromptBlocks(prompt),
     collectionIds: lib.listCollectionIdsForPrompt(prompt.id),
   };
 }
@@ -355,6 +359,21 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.promptUpdate, (_e, payload: unknown) => {
     const { id, patch } = promptUpdateSchema.parse(payload);
     return toDetail(lib.updatePromptMetadata(id, patch));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.promptSetBlocks, (_e, payload: unknown) => {
+    const { promptId, blocks } = promptSetBlocksSchema.parse(payload);
+    return toDetail(lib.setPromptBlocks(promptId, blocks));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.promptBakeBlocks, (_e, payload: unknown) => {
+    const input = promptBakeBlocksSchema.parse(payload);
+    const { version, blocks } = lib.bakeBlocksIntoNewVersion(input);
+    const prompt = lib.getPrompt(input.promptId);
+    return {
+      version: toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null),
+      blocks: toPromptBlocks({ blocks_json: blocks.length ? JSON.stringify({ v: 1, blocks }) : null }),
+    };
   });
 
   ipcMain.handle(IPC_CHANNELS.promptSetStarred, (_e, payload: unknown) => {

@@ -1,6 +1,8 @@
 import {
+  assemblePromptContent,
   extractPromptVariables,
   missingPromptVariables,
+  parseBlocksJson,
   resolvePrompt,
   resolveVersion,
   renderPromptVariablesBounded,
@@ -53,14 +55,27 @@ function selectionForPrompt(
   try {
     const prompt = resolvePrompt(library, exactPrompt.id);
     const current = resolveVersion(library, prompt.id);
-    const requiredVariables = extractPromptVariables(current.version.content);
+    // Blocks come from the same prompt row read as the version — no second
+    // fetch, no window where version and blocks could disagree. The template
+    // is assembled with the blocks' DEFAULT states; per-use overrides are
+    // applied at render time against `baseContent`.
+    const blocks = parseBlocksJson(exactPrompt.blocks_json);
+    const templateContent = assemblePromptContent(current.version.content, blocks);
+    const requiredVariables = extractPromptVariables(templateContent);
     return {
       promptId: prompt.id,
       title: prompt.title,
       versionId: current.version.id,
       versionLabel: current.label,
-      templateContent: current.version.content,
+      templateContent,
       requiredVariables,
+      baseContent: current.version.content,
+      blocks: blocks.map((block) => ({
+        id: block.id,
+        description: block.description,
+        content: block.content,
+        isActive: block.isActive,
+      })),
     };
   } catch (error) {
     if (error instanceof QuickPaletteError) throw error;
@@ -193,15 +208,18 @@ export function renderQuickPalette(
   | { status: "needs-input"; missingVariables: string[] }
   | { status: "ready"; content: string } {
   const selection = assertQuickPaletteSelectionCurrent(library, input);
-  validateVariables(selection.requiredVariables, input.variables);
+  // Per-use overrides assemble against the raw base; unknown ids are ignored
+  // by assembly, so a stale toggle id can never inject block text.
+  const template = assemblePromptContent(selection.baseContent, selection.blocks, input.blockOverrides);
+  validateVariables(extractPromptVariables(template), input.variables);
   let content: string;
   try {
-    content = renderPromptVariablesBounded(selection.templateContent, input.variables);
+    content = renderPromptVariablesBounded(template, input.variables);
   } catch (error) {
     if (error instanceof PromptVariableError) throw new QuickPaletteError("invalid-input", error.message);
     throw error;
   }
-  const missingVariables = missingPromptVariables(selection.templateContent, input.variables);
+  const missingVariables = missingPromptVariables(template, input.variables);
   if (missingVariables.length > 0) return { status: "needs-input", missingVariables };
 
   return {

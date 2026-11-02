@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import type { PromptBlockDto } from "../../shared/ipc.js";
 import { CommandPalette } from "./components/CommandPalette";
 import { NewPromptDialog } from "./components/dialogs";
 import { HistoryView } from "./components/HistoryView";
@@ -108,6 +109,7 @@ export default function App() {
       description: string;
       content: string;
       tagIds: string[];
+      blocks?: PromptBlockDto[];
       collectionId?: string;
       collectionName?: string;
     }) =>
@@ -116,6 +118,7 @@ export default function App() {
         content: input.content,
         ...(input.description ? { description: input.description } : {}),
         ...(input.tagIds.length > 0 ? { tagIds: input.tagIds } : {}),
+        ...(input.blocks && input.blocks.length > 0 ? { blocks: input.blocks } : {}),
         ...(input.collectionId ? { collectionId: input.collectionId } : {}),
       }),
     {

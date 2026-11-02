@@ -24,6 +24,18 @@ export const promptListSchema = z.object({
 export type PromptListQuery = z.infer<typeof promptListSchema>;
 export type SortKey = NonNullable<PromptListQuery["sort"]>;
 
+// Prompt blocks. Limits mirror core BLOCK_LIMITS — the two must move together.
+// `id` is required: core fills missing ids on write, and every read-side row
+// (prompt detail, bake result) always carries one, so the renderer can key,
+// reorder and override blocks without undefined-narrowing.
+export const promptBlockSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  description: z.string().max(200).optional(),
+  content: z.string().min(1).max(50_000),
+  isActive: z.boolean(),
+});
+export type PromptBlockDto = z.infer<typeof promptBlockSchema>;
+
 export const promptCreateSchema = z.object({
   title: shortText,
   description: z.string().max(5_000).optional(),
@@ -31,6 +43,7 @@ export const promptCreateSchema = z.object({
   collectionId: id.optional(),
   content: longText,
   changeNote: z.string().max(2_000).optional(),
+  blocks: z.array(promptBlockSchema).max(50).optional(),
 });
 export type PromptCreateInput = z.infer<typeof promptCreateSchema>;
 
@@ -49,6 +62,21 @@ export const promptUpdateSchema = z.object({
     icon: z.string().max(100).nullable().optional(),
   }),
 });
+
+export const promptSetBlocksSchema = z.object({
+  promptId: id,
+  blocks: z.array(promptBlockSchema).max(50),
+});
+export type PromptSetBlocksInput = z.infer<typeof promptSetBlocksSchema>;
+
+export const promptBakeBlocksSchema = z.object({
+  promptId: id,
+  branchId: id,
+  baseVersionId: id,
+  content: longText,
+  changeNote: z.string().max(2_000).optional(),
+});
+export type PromptBakeBlocksInput = z.infer<typeof promptBakeBlocksSchema>;
 
 export const versionCreateSchema = z.object({
   promptId: id,
@@ -129,11 +157,15 @@ export const quickPaletteSearchSchema = z.strictObject({
   sessionId: id,
   query: z.string().max(500),
 });
+// Per-use block toggles: known ids only reach assembly (unknown ones are
+// ignored there), values must be booleans.
+export const quickPaletteBlockOverridesSchema = z.record(z.string().max(200), z.boolean()).optional();
 export const quickPaletteResolveSchema = z.strictObject({ sessionId: id, promptId: id });
 export const quickPaletteRenderSchema = z.strictObject({
   sessionId: id,
   promptId: id,
   versionId: id,
+  blockOverrides: quickPaletteBlockOverridesSchema,
   variables: z.preprocess((value) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
     const prototype: unknown = Object.getPrototypeOf(value);
@@ -197,19 +229,36 @@ export interface QuickPaletteItem {
   currentVersionLabel: string;
   matchedHistory: boolean;
 }
+/** One prompt block as exposed to the palette UI (defaults from the prompt row). */
+export interface QuickPaletteBlockInfo {
+  id: string;
+  description: string;
+  content: string;
+  isActive: boolean;
+}
 export interface QuickPaletteSelection {
   promptId: string;
   title: string;
   versionId: string;
   versionLabel: string;
+  /**
+   * Base content assembled with the blocks' DEFAULT states — the copy
+   * re-validation compares this, so any default-affecting blocks_json edit
+   * invalidates a stale preview. Use `baseContent` + `blocks` (+ overrides)
+   * to assemble other effective states.
+   */
   templateContent: string;
   requiredVariables: string[];
+  baseContent: string;
+  blocks: QuickPaletteBlockInfo[];
 }
 export interface QuickPaletteRenderInput {
   sessionId: string;
   promptId: string;
   versionId: string;
   variables: Record<string, string | number | boolean>;
+  /** Per-use block toggles by id; ids absent here fall back to defaults. */
+  blockOverrides?: Record<string, boolean>;
 }
 export type QuickPalettePreview =
   | { status: "needs-input"; missingVariables: string[] }
@@ -509,8 +558,12 @@ export const aiRunSchema = z.object({
   promptId: id,
   /** Defaults to the prompt's current version. */
   versionId: id.optional(),
-  /** Raw prompt content; {{variable}} placeholders are substituted. */
-  content: z.string().trim().min(1).max(1_000_000),
+  /**
+   * Final prompt text assembled by the renderer (base content + active blocks,
+   * variables possibly filled inline). Base content alone is capped at 1 MB by
+   * prompt:create; the extra 200k covers the block budget (core BLOCK_LIMITS).
+   */
+  content: z.string().trim().min(1).max(1_200_000),
   variables: z.record(z.string().max(200), z.string().max(100_000))
     .refine((values) => Object.keys(values).length <= 100, { message: "Too many prompt variables" })
     .refine(
@@ -644,6 +697,8 @@ export interface PromptDetail extends PromptSummary {
   currentVersionId: string | null;
   draftContent: string | null;
   draftBaseVersionId: string | null;
+  /** Parsed optional blocks (defensive: malformed stored JSON collapses to []). */
+  blocks: PromptBlockDto[];
   collectionIds: string[];
 }
 
@@ -1092,6 +1147,10 @@ export interface PromptBr0Api {
     create(input: PromptCreateInput): Promise<PromptDetail>;
     duplicate(input: PromptDuplicateInput): Promise<PromptDetail>;
     update(id: string, patch: { title?: string; description?: string | null; icon?: string | null }): Promise<PromptDetail>;
+    /** Replaces the prompt's whole optional-block list. */
+    setBlocks(promptId: string, blocks: PromptBlockDto[]): Promise<PromptDetail>;
+    /** Bakes active blocks into a new version and removes them from the list. */
+    bakeBlocks(input: PromptBakeBlocksInput): Promise<{ version: VersionDto; blocks: PromptBlockDto[] }>;
     setStarred(id: string, starred: boolean): Promise<void>;
     softDelete(id: string): Promise<void>;
     restore(id: string): Promise<void>;

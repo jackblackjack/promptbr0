@@ -35,6 +35,8 @@ const SELECTION: QuickPaletteSelection = {
   versionLabel: "v1",
   templateContent: "Hello {{name}} from {{place}}",
   requiredVariables: ["name", "place"],
+  baseContent: "Hello {{name}} from {{place}}",
+  blocks: [],
 };
 
 let bridge: MockBridge;

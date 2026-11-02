@@ -9,11 +9,13 @@ import type {
   TagRow,
   VersionRow,
 } from "@promptbr0/core";
+import { parseBlocksJson } from "@promptbr0/core";
 import type {
   BranchDto,
   CollectionDto,
   CollectionTreeDto,
   NoteDto,
+  PromptBlockDto,
   PromptSummary,
   RatingDto,
   RunDto,
@@ -51,6 +53,15 @@ export function toTreeDto(node: CollectionTreeItem): CollectionTreeDto {
     promptCount: node.promptCount,
     children: node.children.map((child: CollectionTreeItem) => toTreeDto(child)),
   };
+}
+
+/**
+ * Read-boundary block parsing: stored JSON that fails the envelope check
+ * (shape drift from an older peer, manual edits) collapses to an empty list —
+ * the prompt itself must keep working.
+ */
+export function toPromptBlocks(row: Pick<PromptRow, "blocks_json">): PromptBlockDto[] {
+  return parseBlocksJson(row.blocks_json);
 }
 
 export function toPromptSummary(

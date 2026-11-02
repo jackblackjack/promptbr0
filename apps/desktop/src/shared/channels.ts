@@ -8,6 +8,8 @@ export const IPC_CHANNELS = {
   promptCreate: "prompt:create",
   promptDuplicate: "prompt:duplicate",
   promptUpdate: "prompt:update",
+  promptSetBlocks: "prompt:set-blocks",
+  promptBakeBlocks: "prompt:bake-blocks",
   promptSetStarred: "prompt:set-starred",
   promptSoftDelete: "prompt:soft-delete",
   promptRestore: "prompt:restore",

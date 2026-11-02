@@ -145,6 +145,8 @@ export function createMockBridge(): MockBridge {
       create: vi.fn(notStubbed),
       duplicate: vi.fn(notStubbed),
       update: vi.fn(notStubbed),
+      setBlocks: vi.fn(notStubbed),
+      bakeBlocks: vi.fn(notStubbed),
       setStarred: vi.fn(async () => {}),
       softDelete: vi.fn(async () => {}),
       restore: vi.fn(async () => {}),
