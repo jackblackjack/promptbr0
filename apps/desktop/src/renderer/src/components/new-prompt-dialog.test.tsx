@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiCatalogDto, AiProviderDto } from "../../../shared/ipc.js";
@@ -139,5 +139,64 @@ describe("NewPromptDialog generate flow", () => {
       expect(screen.getByPlaceholderText(/senior engineer/i)).toHaveValue("AI generated draft"),
     );
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});
+
+describe("NewPromptDialog dismiss guard", () => {
+  // Mirrors renderDialog()'s cache seeding so no query suspends mid-test.
+  function renderGuardedDialog(onOpenChange: (open: boolean) => void) {
+    bridge.ai.providers.list.mockResolvedValue([provider]);
+    bridge.ai.catalog.get.mockResolvedValue(catalog);
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(qk.aiProviders, [provider]);
+    queryClient.setQueryData(qk.aiCatalog, catalog);
+    renderApp(<NewPromptDialog open onOpenChange={onOpenChange} allTags={[]} onCreate={vi.fn()} />, {
+      queryClient,
+    });
+  }
+
+  // Radix attaches its document-level pointerdown listener one tick after
+  // mount, and defers a primary-button outside press to the follow-up click —
+  // so tests wait a tick, then fire the whole pointer sequence.
+  async function clickOutside() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.pointerDown(document.body);
+    fireEvent.click(document.body);
+  }
+
+  it("asks before an outside click closes a dialog holding input", async () => {
+    const onOpenChange = vi.fn();
+    renderGuardedDialog(onOpenChange);
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/code review — security focus/i), "My prompt");
+
+    await clickOutside();
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+    const confirm = await screen.findByRole("alertdialog");
+    expect(within(confirm).getByText(/close without saving\?/i)).toBeInTheDocument();
+    await user.click(within(confirm).getByRole("button", { name: /close without saving/i }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("closes immediately on an outside click when nothing was entered", async () => {
+    const onOpenChange = vi.fn();
+    renderGuardedDialog(onOpenChange);
+
+    await clickOutside();
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("gates Escape the same way while input is present", async () => {
+    const onOpenChange = vi.fn();
+    renderGuardedDialog(onOpenChange);
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/code review — security focus/i), "My prompt");
+
+    await user.keyboard("{Escape}");
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
   });
 });

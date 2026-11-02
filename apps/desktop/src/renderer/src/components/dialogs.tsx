@@ -21,6 +21,8 @@ export function DialogShell({
   children,
   width = "max-w-md",
   size,
+  onPointerDownOutside,
+  onEscapeKeyDown,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -31,12 +33,18 @@ export function DialogShell({
       "flex h-[80vh] w-[75vw]" — an appended w-* class could not reliably override
       the base w-[calc(100vw-2rem)] because cx is a plain join, not tailwind-merge. */
   size?: string;
+  /** Optional guards for outside clicks / Escape; call event.preventDefault()
+      to keep the dialog open. Used to confirm discards of unsaved input. */
+  onPointerDownOutside?: (event: Event) => void;
+  onEscapeKeyDown?: (event: Event) => void;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="pb-overlay fixed inset-0 z-40 bg-black/60" />
         <Dialog.Content
+          onPointerDownOutside={onPointerDownOutside}
+          onEscapeKeyDown={onEscapeKeyDown}
           className={cx(
             "pb-dialog fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2",
             size ?? cx("max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] overflow-y-auto", width),
@@ -201,6 +209,8 @@ export function NewPromptDialog({
   const [genPickerOpen, setGenPickerOpen] = useState(false);
   // Generated draft awaiting the overwrite confirmation (non-null = dialog open).
   const [pendingGenerated, setPendingGenerated] = useState<string | null>(null);
+  // Outside-click/Escape discard confirmation (any unsaved user input present).
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -213,6 +223,7 @@ export function NewPromptDialog({
       setGenDescription("");
       setGenModel(availableModels[0] ?? null);
       setPendingGenerated(null);
+      setConfirmDiscardOpen(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -245,6 +256,24 @@ export function NewPromptDialog({
     },
   );
 
+  // Anything the user has put into the dialog that would be lost on an
+  // accidental outside click, Escape, or an in-flight AI generation. Explicit
+  // closes (Cancel button, ✕) bypass the guard — those are deliberate.
+  const hasInput =
+    title.trim() !== "" ||
+    description.trim() !== "" ||
+    content.trim() !== "" ||
+    tagIds.length > 0 ||
+    persistableBlocks(blocks).length > 0 ||
+    genDescription.trim() !== "" ||
+    generate.isPending;
+
+  const guardDismiss = (event: Event) => {
+    if (!hasInput) return;
+    event.preventDefault();
+    setConfirmDiscardOpen(true);
+  };
+
   const openGenerate = () => {
     if (availableModels.length === 0) {
       toast(t("main_pane.no_ai_providers"), "error");
@@ -271,6 +300,8 @@ export function NewPromptDialog({
       onOpenChange={onOpenChange}
       title={t("dialog.new_prompt")}
       size="flex h-[80vh] w-[75vw] flex-col overflow-y-auto"
+      onPointerDownOutside={guardDismiss}
+      onEscapeKeyDown={guardDismiss}
     >
       <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col gap-4">
         <label className="block space-y-1.5">
@@ -410,6 +441,20 @@ export function NewPromptDialog({
       onConfirm={() => {
         if (pendingGenerated !== null) applyGenerated(pendingGenerated);
         setPendingGenerated(null);
+      }}
+    />
+    <ConfirmDialog
+      open={confirmDiscardOpen}
+      onOpenChange={(next) => {
+        if (!next) setConfirmDiscardOpen(false);
+      }}
+      title={t("dialog.close_without_saving_title")}
+      description={t("dialog.close_without_saving_desc")}
+      confirmLabel={t("dialog.close_without_saving_confirm")}
+      danger
+      onConfirm={() => {
+        setConfirmDiscardOpen(false);
+        onOpenChange(false);
       }}
     />
     </>
