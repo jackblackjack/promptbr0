@@ -161,6 +161,7 @@ export const collectionImportApplySchema = z.object({
   strategy: z.enum(["skip", "overwrite", "duplicate"]),
 }).strict();
 export type CollectionImportApplyInput = z.infer<typeof collectionImportApplySchema>;
+export type CollectionImportApplyStrategy = CollectionImportApplyInput["strategy"];
 
 export const collectionImportPreviewDtoSchema = z.object({
   path: z.string().min(1),
