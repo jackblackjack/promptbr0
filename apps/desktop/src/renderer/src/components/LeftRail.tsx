@@ -246,7 +246,7 @@ export function LeftRail({
   if (collapsed) {
     return (
       <aside className="flex h-full w-full flex-col items-center bg-panel py-2">
-        <img src={iconUrl} alt="PromptBr0" className="h-6 w-6 rounded-md" />
+        <img src={iconUrl} alt={t("left_rail.app_name")} className="h-6 w-6 rounded-md" />
         <nav className="mt-3 flex flex-col items-center space-y-0.5">
           <NavItem collapsed view={{ kind: "library" }} label={t("left_rail.library")} icon={<BookOpen size={15} />} />
           <NavItem collapsed view={{ kind: "history" }} label={t("left_rail.history")} icon={<Clock size={15} />} />
@@ -277,8 +277,8 @@ export function LeftRail({
   return (
     <aside className="flex h-full w-full flex-col bg-panel">
       <div className="flex items-center gap-2 px-4 pb-2 pt-4">
-        <img src={iconUrl} alt="PromptBr0" className="h-6 w-6 shrink-0 rounded-md" />
-        <span className="text-[13px] font-semibold tracking-tight text-ink">PromptBr0</span>
+        <img src={iconUrl} alt={t("left_rail.app_name")} className="h-6 w-6 shrink-0 rounded-md" />
+        <span className="text-[13px] font-semibold tracking-tight text-ink">{t("left_rail.app_name")}</span>
         <button
           type="button"
           onClick={onToggleCollapse}

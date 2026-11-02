@@ -384,6 +384,7 @@
   "inspector.title": "Инспектор",
   "inspector.usage": "Использование",
   "left_rail.actions_for": "Действия: {name}",
+  "left_rail.app_name": "ПромптБр0",
   "left_rail.collapse_folder": "Свернуть папку",
   "left_rail.collapse_sidebar": "Свернуть боковую панель",
   "left_rail.collection_created": "Коллекция «{name}» создана",

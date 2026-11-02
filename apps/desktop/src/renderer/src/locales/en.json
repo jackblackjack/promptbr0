@@ -384,6 +384,7 @@
   "inspector.title": "Inspector",
   "inspector.usage": "Usage",
   "left_rail.actions_for": "{name} actions",
+  "left_rail.app_name": "PromptBr0",
   "left_rail.collapse_folder": "Collapse folder",
   "left_rail.collapse_sidebar": "Collapse sidebar",
   "left_rail.collection_created": "Collection \"{name}\" created",
