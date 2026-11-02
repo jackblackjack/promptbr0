@@ -194,6 +194,17 @@ export function createMockBridge(): MockBridge {
       removePrompt: vi.fn(async () => {}),
       forPrompt: vi.fn(async () => []),
       path: vi.fn(async () => []),
+      exportCollection: vi.fn(async () => ({ canceled: true })),
+      importPreview: vi.fn(async () => ({ canceled: true as const })),
+      importApply: vi.fn(async () => ({
+        outcome: "added" as const,
+        rootName: "",
+        collectionsInserted: 0,
+        membersLinked: 0,
+        membersMerged: 0,
+        membersUnmatched: 0,
+        unmatchedTitles: [],
+      })),
     },
     search: vi.fn(async () => []),
     ratings: {

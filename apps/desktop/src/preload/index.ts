@@ -97,6 +97,9 @@ const api: PromptBr0Api = {
       invoke(IPC_CHANNELS.collectionRemovePrompt, { collectionId, promptId }),
     forPrompt: (promptId: string) => invoke(IPC_CHANNELS.collectionForPrompt, promptId),
     path: (collectionId: string) => invoke(IPC_CHANNELS.collectionPath, { collectionId }),
+    exportCollection: (id: string) => invoke(IPC_CHANNELS.collectionExport, { id }),
+    importPreview: () => invoke(IPC_CHANNELS.collectionImportPreview, undefined),
+    importApply: (input) => invoke(IPC_CHANNELS.collectionImportApply, input),
   },
   search: (query) => invoke(IPC_CHANNELS.search, { query }),
   ratings: {

@@ -149,6 +149,43 @@ export const collectionPromptSchema = z.object({ collectionId: id, promptId: id 
 export const collectionPathSchema = z.object({ collectionId: id });
 export type CollectionPathQuery = z.infer<typeof collectionPathSchema>;
 
+// Single-file collection transfer (.pbrcol): the preview handler opens the
+// file dialog itself and answers with the parsed file's path + summary; apply
+// re-reads that path and re-resolves everything against the live library.
+export const collectionExportSchema = z.object({ id }).strict();
+
+export const collectionImportApplySchema = z.object({
+  path: z.string().min(1).max(4_096),
+  /** What the preview showed; a collision appearing since then fails the apply. */
+  expectedRootCollision: z.boolean(),
+  strategy: z.enum(["skip", "overwrite", "duplicate"]),
+}).strict();
+export type CollectionImportApplyInput = z.infer<typeof collectionImportApplySchema>;
+
+export const collectionImportPreviewDtoSchema = z.object({
+  path: z.string().min(1),
+  rootName: z.string().min(1).max(200),
+  rootCollision: z.boolean(),
+  existingRootId: z.string().nullable(),
+  subcollectionCount: z.number().int().min(0),
+  memberCount: z.number().int().min(0),
+  matchedById: z.number().int().min(0),
+  matchedByTitle: z.number().int().min(0),
+  unmatchedTitles: z.array(z.string().min(1).max(200)),
+}).strict();
+export type CollectionImportPreviewDto = z.infer<typeof collectionImportPreviewDtoSchema>;
+
+export const collectionImportResultDtoSchema = z.object({
+  outcome: z.enum(["added", "replaced", "skipped"]),
+  rootName: z.string().min(1).max(200),
+  collectionsInserted: z.number().int().min(0),
+  membersLinked: z.number().int().min(0),
+  membersMerged: z.number().int().min(0),
+  membersUnmatched: z.number().int().min(0),
+  unmatchedTitles: z.array(z.string().min(1).max(200)),
+}).strict();
+export type CollectionImportResultDto = z.infer<typeof collectionImportResultDtoSchema>;
+
 export const searchSchema = z.object({ query: z.string().max(1_000) });
 
 export const quickPaletteSettingsSchema = z.strictObject({
@@ -1207,6 +1244,12 @@ export interface PromptBr0Api {
     removePrompt(collectionId: string, promptId: string): Promise<void>;
     forPrompt(promptId: string): Promise<string[]>;
     path(collectionId: string): Promise<CollectionBreadcrumbDto[]>;
+    /** Save the collection subtree as one .pbrcol file next to rename/delete. */
+    exportCollection(id: string): Promise<FileOpResult>;
+    /** Opens the file dialog, parses the file, answers with path + summary. */
+    importPreview(): Promise<{ canceled: true } | { canceled: false; preview: CollectionImportPreviewDto }>;
+    /** Applies the previously previewed file with the chosen strategy. */
+    importApply(input: CollectionImportApplyInput): Promise<CollectionImportResultDto>;
   };
   search(query: string): Promise<SearchResultDto[]>;
   ratings: {

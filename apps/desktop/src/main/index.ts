@@ -32,6 +32,8 @@ import {
   collectionMoveSchema,
   collectionPromptSchema,
   collectionPathSchema,
+  collectionExportSchema,
+  collectionImportApplySchema,
   draftSetSchema,
   markdownConfirmSchema,
   markdownDiscardSchema,
@@ -75,6 +77,8 @@ import {
   versionUpdateLabelSchema,
   type ActivityItemDto,
   type BranchCreateResult,
+  type CollectionImportPreviewDto,
+  type CollectionImportResultDto,
   type FileOpResult,
   type ImportResult,
   type LibraryStats,
@@ -85,6 +89,7 @@ import {
   type SuggestionDto,
   type TagDto,
 } from "../shared/ipc.js";
+import { COLLECTION_FILE_FILTER, readCollectionFile, writeCollectionFile } from "./collection-file.js";
 import {
   toBranchDto,
   toCollectionDto,
@@ -338,6 +343,8 @@ function runBackupNow(): string {
   backupScheduler?.backupCompleted();
   return backupPath;
 }
+
+type CollectionImportPreviewResult = { canceled: true } | { canceled: false; preview: CollectionImportPreviewDto };
 
 function registerIpcHandlers(): void {
   const lib = getLibrary();
@@ -644,6 +651,55 @@ function registerIpcHandlers(): void {
       name: b.name,
       parentId: b.parent_collection_id,
     }));
+  });
+
+  // Single-file collection transfer (.pbrcol). Preview opens the dialog and
+  // answers with the parsed file's summary; apply re-reads the same path so
+  // the strategy decision travels, not file bytes across the bridge.
+  handle(IPC_CHANNELS.collectionExport, async (event, payload: unknown): Promise<FileOpResult> => {
+    const { id } = collectionExportSchema.parse(payload);
+    const collection = lib.listCollections().find((row) => row.id === id);
+    if (!collection) throw new Error(`Collection not found: ${id}`);
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) throw new Error("Cannot show a save dialog without a window");
+    const result = await dialog.showSaveDialog(win, {
+      title: "Export collection",
+      defaultPath: `${collection.name.replace(/[^\w.-]+/g, "-").toLowerCase()}.pbrcol`,
+      filters: [COLLECTION_FILE_FILTER],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    writeCollectionFile(result.filePath, lib.exportCollection(id), app.getVersion());
+    console.log(`[main] collection exported to ${result.filePath}`);
+    return { canceled: false, path: result.filePath };
+  });
+
+  handle(IPC_CHANNELS.collectionImportPreview, async (event): Promise<CollectionImportPreviewResult> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) throw new Error("Cannot show an open dialog without a window");
+    const result = await dialog.showOpenDialog(win, {
+      title: "Import collection",
+      properties: ["openFile"],
+      filters: [COLLECTION_FILE_FILTER],
+    });
+    const filePath = result.filePaths[0];
+    if (result.canceled || !filePath) return { canceled: true };
+    const preview = lib.previewCollectionImport(readCollectionFile(filePath));
+    return { canceled: false, preview: { path: filePath, ...preview } };
+  });
+
+  handle(IPC_CHANNELS.collectionImportApply, (_e, payload: unknown): CollectionImportResultDto => {
+    const { path, strategy, expectedRootCollision } = collectionImportApplySchema.parse(payload);
+    const raw = readCollectionFile(path);
+    // Guard the rare preview→apply drift: a root collision appearing under a
+    // decision made without one must fail loudly instead of silently skipping
+    // (or overwriting a collection the user never saw). The inverse drift is
+    // safe: every strategy degrades to a plain add without a collision.
+    if (lib.previewCollectionImport(raw).rootCollision && !expectedRootCollision) {
+      throw new Error("The library changed since the preview — review the import again");
+    }
+    // Destructive swap: take the same local backup that runs before migrations.
+    if (strategy === "overwrite") writeBackup();
+    return lib.importCollection(raw, { strategy });
   });
 
   // ---------------------------------------------------------------- search
