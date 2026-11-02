@@ -77,7 +77,7 @@
   "blocks.description_aria": "Описание блока {index}",
   "blocks.description_placeholder": "Описание (необязательно)",
   "blocks.expand_aria": "Показать или скрыть текст блока {index}",
-  "blocks.hint": "Активные блоки дописываются в конец промпта при запуске и копировании.",
+  "blocks.hint": "Активные блоки дописываются в конец при подготовке промпта.",
   "blocks.move_down_aria": "Сдвинуть блок {index} вниз",
   "blocks.move_up_aria": "Сдвинуть блок {index} вверх",
   "blocks.title": "Опциональные блоки",
