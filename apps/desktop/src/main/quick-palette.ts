@@ -501,6 +501,10 @@ export function quickPaletteWindowOptions(
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Explicit, so a future Electron default change cannot silently loosen
+      // either: same values as the platform defaults today.
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   };
 }

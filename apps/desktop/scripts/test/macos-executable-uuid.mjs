@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import afterPack from "../after-pack.mjs";
+import { electronBinaryPath } from "../electron-fuses.mjs";
 import {
   readMachOUuids,
   replaceMacExecutableUuids,
 } from "../macos-executable-uuid.mjs";
+
+// The real fuse flipper patches actual Electron binaries; the composite-hook
+// fixtures are text stubs, so tests inject a no-op flip and assert on the
+// context the hook hands to it instead.
+const flipNoop = async () => {};
 
 const CPU = {
   x64: 0x01000007,
@@ -282,7 +289,7 @@ test("composite hook preserves the Linux launcher and skips UUID correction", as
   tempDirectories.push(root);
   await writeFile(join(root, "promptbr0"), "linux executable");
 
-  await afterPack(afterPackContext(root, "linux"));
+  await afterPack(afterPackContext(root, "linux"), { flipFuses: flipNoop });
 
   assert.equal(await readFile(join(root, "promptbr0-bin"), "utf8"), "linux executable");
   assert.match(await readFile(join(root, "promptbr0"), "utf8"), /--ozone-platform=x11/);
@@ -294,7 +301,7 @@ test("composite hook is a strict Windows no-op", async () => {
   const executable = join(root, "PromptBr0.exe");
   await writeFile(executable, "windows executable");
 
-  await afterPack(afterPackContext(root, "win32"));
+  await afterPack(afterPackContext(root, "win32"), { flipFuses: flipNoop });
 
   assert.equal(await readFile(executable, "utf8"), "windows executable");
 });
@@ -319,7 +326,7 @@ test("composite hook changes only the outer macOS executable", async () => {
     writeFile(asarPath, "promptbr0 fixture\n"),
   ]);
 
-  await afterPack(afterPackContext(root, "darwin"));
+  await afterPack(afterPackContext(root, "darwin"), { flipFuses: flipNoop });
 
   assert.notDeepEqual(await readFile(executablePath), outer);
   assert.deepEqual(await readFile(helperPath), helper);
@@ -342,8 +349,8 @@ test("universal packaging transforms only the final merged executable once", asy
   const x64TempExecutable = await macAppFixture(x64TempDir, x64Original);
   const arm64TempExecutable = await macAppFixture(arm64TempDir, arm64Original);
 
-  await afterPack(afterPackContext(x64TempDir, "darwin", 1));
-  await afterPack(afterPackContext(arm64TempDir, "darwin", 3));
+  await afterPack(afterPackContext(x64TempDir, "darwin", 1), { flipFuses: flipNoop });
+  await afterPack(afterPackContext(arm64TempDir, "darwin", 3), { flipFuses: flipNoop });
 
   const x64ForMerge = await readFile(x64TempExecutable);
   const arm64ForMerge = await readFile(arm64TempExecutable);
@@ -352,7 +359,7 @@ test("universal packaging transforms only the final merged executable once", asy
     { arch: "arm64", buffer: arm64ForMerge },
   ]);
   const finalExecutable = await macAppFixture(finalAppOutDir, mergedExecutable);
-  await afterPack(afterPackContext(finalAppOutDir, "darwin", 4));
+  await afterPack(afterPackContext(finalAppOutDir, "darwin", 4), { flipFuses: flipNoop });
 
   assert.deepEqual(x64ForMerge, x64Original);
   assert.deepEqual(arm64ForMerge, arm64Original);
@@ -375,9 +382,50 @@ test("standalone thin x64 and arm64 packaging still transforms each executable",
       appOutDir,
       thinMachO({ arch: architecture }),
     );
-    await afterPack(afterPackContext(appOutDir, "darwin", arch));
+    await afterPack(afterPackContext(appOutDir, "darwin", arch), { flipFuses: flipNoop });
     assert.deepEqual(readMachOUuids(await readFile(executablePath)), [
       { architecture, uuid: "4B9D6DFD-1E37-2F7C-0F74-244F8E59D575" },
     ]);
   }
+});
+
+test("composite hook flips fuses on the real Linux binary before the launcher rename", async () => {
+  const root = await mkdtemp(join(tmpdir(), "promptbr0-after-pack-fuses-linux-"));
+  tempDirectories.push(root);
+  await writeFile(join(root, "promptbr0"), "linux executable");
+
+  const flipObservations = [];
+  await afterPack(afterPackContext(root, "linux"), {
+    flipFuses: async (context) => {
+      flipObservations.push({
+        appOutDir: context.appOutDir,
+        binaryExisted: existsSync(join(context.appOutDir, "promptbr0")),
+        // The launcher rename must not have happened yet: fuses target the ELF.
+        renamedAway: existsSync(join(context.appOutDir, "promptbr0-bin")),
+      });
+    },
+  });
+
+  assert.deepEqual(flipObservations, [
+    { appOutDir: root, binaryExisted: true, renamedAway: false },
+  ]);
+  // The launcher install still ran after the flip.
+  assert.match(await readFile(join(root, "promptbr0"), "utf8"), /--ozone-platform=x11/);
+  assert.equal(await readFile(join(root, "promptbr0-bin"), "utf8"), "linux executable");
+});
+
+test("electron fuses target the real executable path per platform", () => {
+  const contextFor = (electronPlatformName) => ({
+    appOutDir: "/app",
+    electronPlatformName,
+    packager: { executableName: "promptbr0", appInfo: { productFilename: "PromptBr0" } },
+  });
+
+  assert.equal(
+    electronBinaryPath(contextFor("darwin")),
+    join("/app", "PromptBr0.app", "Contents", "MacOS", "PromptBr0"),
+  );
+  assert.equal(electronBinaryPath(contextFor("win32")), join("/app", "PromptBr0.exe"));
+  // Plain name at afterPack time: the Linux launcher rename happens after the flip.
+  assert.equal(electronBinaryPath(contextFor("linux")), join("/app", "promptbr0"));
 });

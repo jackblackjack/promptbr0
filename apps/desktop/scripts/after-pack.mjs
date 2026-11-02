@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import { flipProductionFuses } from "./electron-fuses.mjs";
 import installLinuxLauncher from "./linux-launcher.mjs";
 import { replaceMacExecutableUuids } from "./macos-executable-uuid.mjs";
 
@@ -15,7 +16,12 @@ function isUniversalTempPack(context) {
   return suffix !== undefined && context.appOutDir.endsWith(suffix);
 }
 
-export default async function afterPack(context) {
+// `flipFuses` is injectable so script tests can exercise the composite hook
+// against fixture directories without running the real binary patcher.
+export default async function afterPack(context, { flipFuses = flipProductionFuses } = {}) {
+  // Flip first: the Linux launcher would rename the real binary away, and
+  // electron-builder signs only after the afterPack hooks complete.
+  await flipFuses(context);
   await installLinuxLauncher(context);
   if (context.electronPlatformName !== "darwin") return;
   // electron-builder invokes afterPack for both temporary thin apps before

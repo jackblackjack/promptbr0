@@ -430,6 +430,8 @@ describe("quick palette browser window options", () => {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
       },
     });
     expect(quickPaletteWindowOptions("C:\\app\\preload.js", "win32")).not.toHaveProperty("type");

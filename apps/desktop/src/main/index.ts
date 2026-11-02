@@ -185,6 +185,18 @@ configureLinuxDisplayBackend(process.platform, app.commandLine);
 app.setName("PromptBr0");
 applyQaUserDataOverride(app);
 
+// Force the sandbox for every renderer, present and future: the windows below
+// set `sandbox: true` themselves, this closes the gap for any window added
+// later. Must run before app is ready.
+app.enableSandbox();
+
+// Backstop for webContents created outside createWindow() and
+// createQuickPaletteWindow(): renderer content never opens new windows —
+// external links go through the app:open-external IPC (system browser).
+app.on("web-contents-created", (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+});
+
 // Deep links (promptbr0://import-markdown?url=…). Packaged builds also declare the
 // scheme via electron-builder `protocols` in package.json; dev registers the
 // bare Electron binary — expected, dev-only.
@@ -1187,6 +1199,10 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Explicit, so a future Electron default change cannot silently loosen
+      // either: same values as the platform defaults today.
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   });
   mainWindow = window;
