@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type BetterSqlite3 from "better-sqlite3";
+import { restrictPermissions } from "./db.js";
 
 const BACKUP_FILE_RE = /^library-.+\.db$/;
 
@@ -35,11 +36,14 @@ export function latestBackup(dir: string): BackupFile | null {
  * of the snapshot that was written.
  */
 export function backupDatabase(db: BetterSqlite3.Database, dir: string, keep = 10): string {
-  fs.mkdirSync(dir, { recursive: true });
+  // Snapshots contain the whole library; create the dedicated directory
+  // owner-only when it doesn't exist yet (an existing one is left as-is).
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   // Short random suffix: two backups within the same millisecond must not collide.
   const backupPath = path.join(dir, `library-${stamp}-${randomUUID().slice(0, 8)}.db`);
   db.prepare("VACUUM INTO ?").run(backupPath);
+  restrictPermissions(backupPath);
 
   const backups = listBackups(dir);
   for (const stale of backups.slice(Math.max(keep, 0))) {

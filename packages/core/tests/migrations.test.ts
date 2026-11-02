@@ -966,3 +966,77 @@ describe("migrations", () => {
     migrated.db.close();
   });
 });
+
+describe("database file hardening", () => {
+  it("enables secure_delete so freed content is overwritten", () => {
+    const db = openMemoryDatabase();
+    expect(db.pragma("secure_delete", { simple: true })).toBe(1);
+    db.close();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "restricts the database, its WAL/SHM sidecars and its directory to the owner",
+    () => {
+      const dbPath = tmpDbPath();
+      const dir = path.dirname(dbPath);
+      // Make the sidecar case real: SQLite keeps WAL/SHM files while open.
+      const { db } = openDatabase(dbPath);
+      db.prepare("INSERT INTO settings (key, value) VALUES ('warm', 'up')").run();
+
+      expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(`${dbPath}-wal`).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(`${dbPath}-shm`).mode & 0o777).toBe(0o600);
+      // mkdtemp creates 0700 already; the requirement is that opening the
+      // database never leaves it looser than owner-only.
+      expect(fs.statSync(dir).mode & 0o777).toBeLessThanOrEqual(0o700);
+      expect(fs.statSync(dir).mode & 0o777 & 0o077).toBe(0);
+      db.close();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("restricts pre-migration backups to the owner", () => {
+    const dbPath = tmpDbPath();
+    const seeded = physicalDatabase(dbPath, 11);
+    seeded.db.close();
+
+    const { backupPath, db } = openDatabase(dbPath);
+    expect(backupPath).not.toBeNull();
+    expect(fs.statSync(backupPath!).mode & 0o777).toBe(0o600);
+    db.close();
+  });
+
+  it("keeps only the three newest pre-migration backups", () => {
+    const dbPath = tmpDbPath();
+    const seeded = physicalDatabase(dbPath, 11);
+    seeded.db.close();
+    for (let i = 0; i < 5; i++) {
+      fs.writeFileSync(`${dbPath}.backup-2020-01-0${i + 1}T00-00-00-000Z`, "stale");
+    }
+
+    const { backupPath, db } = openDatabase(dbPath);
+    expect(backupPath).not.toBeNull();
+    const remaining = fs
+      .readdirSync(path.dirname(dbPath))
+      .filter((name) => name.startsWith(`${path.basename(dbPath)}.backup-`))
+      .sort();
+    // The five stale fixtures sort before the fresh snapshot; the three
+    // newest survive, the rest is pruned.
+    expect(remaining).toEqual([
+      `${path.basename(dbPath)}.backup-2020-01-04T00-00-00-000Z`,
+      `${path.basename(dbPath)}.backup-2020-01-05T00-00-00-000Z`,
+      path.basename(backupPath!),
+    ]);
+    db.close();
+  });
+
+  it("leaves an existing parent directory's permissions untouched", () => {
+    // PROMPTBR0_DB may point anywhere: openDatabase must never chmod a
+    // directory it did not create (e.g. a shared tmp location).
+    const dbPath = tmpDbPath();
+    const dir = path.dirname(dbPath);
+    fs.chmodSync(dir, 0o755);
+    const { db } = openDatabase(dbPath);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o755);
+    db.close();
+  });
+});

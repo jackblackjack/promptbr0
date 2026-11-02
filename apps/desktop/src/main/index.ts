@@ -353,9 +353,17 @@ function registerIpcHandlers(): void {
     channel: string,
     handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => unknown,
   ): void => {
-    ipcMain.handle(channel, (event, payload) => {
+    ipcMain.handle(channel, async (event, payload) => {
       assertLibraryMainFrame(event, mainWindow);
-      return handler(event, payload);
+      try {
+        return await handler(event, payload);
+      } catch (error) {
+        // A rejected invoke serializes message AND stack to the renderer.
+        // Re-wrapping keeps the user-facing message (toasts display it) but
+        // stops main-process stacks — with SQL fragments and code paths —
+        // from crossing the bridge.
+        throw error instanceof Error ? new Error(error.message) : error;
+      }
     });
   };
 
@@ -375,14 +383,14 @@ function registerIpcHandlers(): void {
   handle(IPC_CHANNELS.promptCreate, (_e, payload: unknown) => {
     const input = promptCreateSchema.parse(payload);
     const prompt = lib.createPrompt(input);
-    console.log(`[main] created prompt ${prompt.id} (${prompt.title})`);
+    console.log(`[main] created prompt ${prompt.id}`);
     return toDetail(prompt);
   });
 
   handle(IPC_CHANNELS.promptDuplicate, (_e, payload: unknown) => {
     const input = promptDuplicateSchema.parse(payload);
     const prompt = lib.duplicatePrompt(input);
-    console.log(`[main] duplicated prompt ${input.promptId} as ${prompt.id} (${prompt.title})`);
+    console.log(`[main] duplicated prompt ${input.promptId} as ${prompt.id}`);
     return toDetail(prompt);
   });
 
@@ -521,7 +529,7 @@ function registerIpcHandlers(): void {
     const input = branchCreateSchema.parse(payload);
     const { branch, version } = lib.createBranch(input);
     const prompt = lib.getPrompt(input.promptId);
-    console.log(`[main] created branch "${branch.name}" on prompt ${input.promptId}`);
+    console.log(`[main] created branch ${branch.id} on prompt ${input.promptId}`);
     return {
       branch: toBranchDto(branch),
       version: toVersionDto(version, branch.name, prompt?.current_version_id ?? null),
@@ -1131,13 +1139,14 @@ function resolveAppDatabasePath(): string {
   ];
   const legacy = legacyCandidates.find((candidate) => candidate !== target && fs.existsSync(candidate));
   if (legacy && !fs.existsSync(target)) {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    // Owner-only: applies only when this call creates the directory.
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     for (const suffix of ["", "-wal", "-shm"]) {
       if (fs.existsSync(legacy + suffix)) fs.copyFileSync(legacy + suffix, target + suffix);
     }
     console.log(`[main] migrated legacy database from ${legacy} to ${target}`);
   }
-  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   return target;
 }
 
@@ -1425,7 +1434,15 @@ if (!gotSingleInstanceLock) {
   registerQuickPaletteIpcHandlers(
     {
       handle: (channel, handler) => {
-        ipcMain.handle(channel, (event, payload) => handler(event, payload));
+        ipcMain.handle(channel, async (event, payload) => {
+          try {
+            return await handler(event, payload);
+          } catch (error) {
+            // Same stack-hygiene as the main-window wrapper: the palette
+            // renderer gets the message, never a main-process stack.
+            throw error instanceof Error ? new Error(error.message) : error;
+          }
+        });
       },
     },
     quickPaletteController,
