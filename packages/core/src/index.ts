@@ -11,6 +11,22 @@ export {
 } from "./blocks.js";
 export { openDatabase, openMemoryDatabase, type OpenDatabaseResult } from "./db.js";
 export {
+  buildLivePromptIndex,
+  preflightCollectionImport,
+  resolveMemberRef,
+  CollectionImportValidationError,
+  MAX_COLLECTION_DEPTH,
+  type CollectionImportPreview,
+  type CollectionImportResult,
+  type CollectionImportStrategy,
+  type CollectionMemberRef,
+  type CollectionNode,
+  type CollectionTransferFile,
+  type LivePromptIndex,
+  type MemberResolution,
+  type MemberResolutionStatus,
+} from "./collection-import.js";
+export {
   preflightLibraryImport,
   LibraryImportValidationError,
   type LibraryImportIssue,

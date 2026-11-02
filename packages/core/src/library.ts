@@ -8,6 +8,17 @@ import {
 } from "./reindex.js";
 import { preflightLibraryImport, type LibraryExport } from "./import-validation.js";
 import {
+  buildLivePromptIndex,
+  preflightCollectionImport,
+  resolveMemberRef,
+  type CollectionImportPreview,
+  type CollectionImportResult,
+  type CollectionImportStrategy,
+  type CollectionNode,
+  type CollectionTransferFile,
+  type LivePromptIndex,
+} from "./collection-import.js";
+import {
   assemblePromptContent,
   normalizeBlocks,
   parseBlocksJson,
@@ -247,6 +258,22 @@ function listDescendantCollectionIds(db: BetterSqlite3.Database, rootId: string)
     )
     .all(rootId)
     .map((row) => row.id);
+}
+
+/**
+ * First free top-level `name (N)` for a "duplicate" import. The loop trims
+ * the base when needed so the final name stays within the 200-char cap the
+ * rest of the app enforces (ipc.ts collection schemas).
+ */
+function firstFreeRootName(db: BetterSqlite3.Database, base: string): string {
+  const exists = db.prepare<string, { id: string }>(
+    "SELECT id FROM collections WHERE name = ? AND parent_collection_id IS NULL",
+  );
+  for (let n = 2; ; n += 1) {
+    const suffix = ` (${n})`;
+    const candidate = base.slice(0, Math.max(1, 200 - suffix.length)) + suffix;
+    if (!exists.get(candidate)) return candidate;
+  }
 }
 
 /**
@@ -2431,6 +2458,201 @@ export class PromptLibrary {
     })();
 
     return summary;
+  }
+
+  // ------------------------------------------------- collection transfer
+
+  /**
+   * Snapshot of one collection and its whole subtree as the logical transfer
+   * payload (`collection.json` inside a `.pbrcol` container). Members are
+   * exported as references (id + title), never snapshots — this file adds or
+   * replaces collections elsewhere without touching prompts. Member titles of
+   * soft-deleted prompts are exported as-is; import treats such refs as
+   * unmatched rather than resurrecting invisible members.
+   */
+  exportCollection(id: string): CollectionTransferFile {
+    const root = this.mustGetCollection(id);
+    const rows = this.all<CollectionRow>("SELECT * FROM collections");
+    const childrenOf = new Map<string | null, CollectionRow[]>();
+    for (const row of rows) {
+      const siblings = childrenOf.get(row.parent_collection_id) ?? [];
+      siblings.push(row);
+      childrenOf.set(row.parent_collection_id, siblings);
+    }
+    const sortSiblings = (list: CollectionRow[]): CollectionRow[] =>
+      list.sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+    const titlesById = new Map(
+      this.all<{ id: string; title: string }>("SELECT id, title FROM prompts").map((row) => [row.id, row.title]),
+    );
+
+    const toNode = (row: CollectionRow): CollectionNode => ({
+      name: row.name,
+      sortOrder: row.sort_order,
+      members: this.all<{ prompt_id: string; sort_order: number }>(
+        "SELECT prompt_id, sort_order FROM collection_prompts WHERE collection_id = ? ORDER BY sort_order ASC",
+        row.id,
+      ).map((member) => ({
+        promptId: member.prompt_id,
+        title: titlesById.get(member.prompt_id) ?? "",
+        sortOrder: member.sort_order,
+      })),
+      children: sortSiblings(childrenOf.get(row.id) ?? []).map(toNode),
+    });
+
+    return {
+      meta: { kind: "collection", schemaVersion: 1, exportedAt: now() },
+      collection: toNode(root),
+    };
+  }
+
+  /**
+   * Validates a collection file and reports what apply would do — matches,
+   * collision, sizes — without writing anything. Advisory only: apply
+   * re-resolves everything against the live library (the preview may go stale
+   * while the user reads it).
+   */
+  previewCollectionImport(input: unknown): CollectionImportPreview {
+    const file = preflightCollectionImport(input);
+    const index = this.livePromptIndex();
+
+    let subcollectionCount = 0;
+    let memberCount = 0;
+    let matchedById = 0;
+    let matchedByTitle = 0;
+    const unmatchedTitles: string[] = [];
+    const walk = (node: CollectionNode): void => {
+      for (const member of node.members) {
+        memberCount += 1;
+        const resolution = resolveMemberRef(index, member.promptId, member.title);
+        if (resolution.status === "id") matchedById += 1;
+        else if (resolution.status === "title") matchedByTitle += 1;
+        else unmatchedTitles.push(member.title);
+      }
+      for (const child of node.children) {
+        subcollectionCount += 1;
+        walk(child);
+      }
+    };
+    walk(file.collection);
+
+    const existing = this.get<{ id: string }>(
+      "SELECT id FROM collections WHERE name = ? AND parent_collection_id IS NULL",
+      file.collection.name,
+    );
+    return {
+      rootName: file.collection.name,
+      rootCollision: existing !== undefined,
+      existingRootId: existing?.id ?? null,
+      subcollectionCount,
+      memberCount,
+      matchedById,
+      matchedByTitle,
+      unmatchedTitles,
+    };
+  }
+
+  /**
+   * Applies a collection file in one all-or-nothing transaction. The strategy
+   * decides the root-name collision (`skip` leaves the existing collection
+   * untouched; `overwrite` swaps it for the imported subtree; `duplicate`
+   * imports under the first free `name (N)` suffix); without a collision
+   * every strategy imports as a plain add. Prompts are never created,
+   * modified, or deleted — members resolve through the live index and link,
+   * with same-target duplicates merged into one membership. The imported root
+   * lands at the top level: overwriting keeps the old root's position, adds
+   * append last (createCollection convention).
+   */
+  importCollection(input: unknown, options: { strategy: CollectionImportStrategy }): CollectionImportResult {
+    const file = preflightCollectionImport(input);
+    const index = this.livePromptIndex();
+
+    return this.db.transaction((): CollectionImportResult => {
+      const root = file.collection;
+      const existing = this.get<{ id: string; sort_order: number }>(
+        "SELECT id, sort_order FROM collections WHERE name = ? AND parent_collection_id IS NULL",
+        root.name,
+      );
+
+      let rootName = root.name;
+      let rootSortOrder = this.get<{ next: number }>(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM collections WHERE parent_collection_id IS NULL",
+      )!.next;
+      let outcome: CollectionImportResult["outcome"] = "added";
+      let collectionsInserted = 0;
+      let membersLinked = 0;
+      let membersMerged = 0;
+      let membersUnmatched = 0;
+      const unmatchedTitles: string[] = [];
+
+      if (existing) {
+        if (options.strategy === "skip") {
+          return { outcome: "skipped", rootName, collectionsInserted: 0, membersLinked: 0, membersMerged: 0, membersUnmatched: 0, unmatchedTitles: [] };
+        }
+        if (options.strategy === "overwrite") {
+          // Position-preserving replace: the imported root inherits the old
+          // root's sort_order. Explicit deletes (not bare cascades) so the
+          // dirty-capture triggers fire and peers see the swap.
+          rootSortOrder = existing.sort_order;
+          const doomed = listDescendantCollectionIds(this.db, existing.id);
+          const placeholders = doomed.map(() => "?").join(", ");
+          this.run(`DELETE FROM collection_prompts WHERE collection_id IN (${placeholders})`, ...doomed);
+          this.run(`DELETE FROM collections WHERE id IN (${placeholders})`, ...doomed);
+          outcome = "replaced";
+        } else {
+          rootName = firstFreeRootName(this.db, root.name);
+        }
+      }
+
+      const usedRootName = rootName;
+      const usedRootSortOrder = rootSortOrder;
+      const insertNode = (node: CollectionNode, parentId: string | null, isRoot: boolean): void => {
+        const id = randomUUID();
+        this.run(
+          "INSERT INTO collections (id, name, sort_order, parent_collection_id) VALUES (?, ?, ?, ?)",
+          id,
+          isRoot ? usedRootName : node.name,
+          isRoot ? usedRootSortOrder : node.sortOrder,
+          parentId,
+        );
+        collectionsInserted += 1;
+
+        const linked = new Set<string>();
+        for (const member of node.members) {
+          const resolution = resolveMemberRef(index, member.promptId, member.title);
+          if (!resolution.promptId) {
+            membersUnmatched += 1;
+            unmatchedTitles.push(member.title);
+            continue;
+          }
+          // Two members can resolve to one live prompt (duplicate titles,
+          // different ids); the junction PK allows only one membership.
+          if (linked.has(resolution.promptId)) {
+            membersMerged += 1;
+            continue;
+          }
+          linked.add(resolution.promptId);
+          this.run(
+            "INSERT INTO collection_prompts (collection_id, prompt_id, sort_order) VALUES (?, ?, ?)",
+            id,
+            resolution.promptId,
+            member.sortOrder,
+          );
+          membersLinked += 1;
+        }
+        // Parents before children so FKs hold; the file's own nesting order is
+        // the dependency order.
+        for (const child of node.children) insertNode(child, id, false);
+      };
+      insertNode(root, null, true);
+
+      return { outcome, rootName, collectionsInserted, membersLinked, membersMerged, membersUnmatched, unmatchedTitles };
+    })();
+  }
+
+  private livePromptIndex(): LivePromptIndex {
+    return buildLivePromptIndex(
+      this.all<{ id: string; title: string }>("SELECT id, title FROM prompts WHERE deleted_at IS NULL"),
+    );
   }
 }
 
