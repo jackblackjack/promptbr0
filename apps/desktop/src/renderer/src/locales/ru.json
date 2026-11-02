@@ -497,6 +497,7 @@
   "main_pane.save_as_new_version": "Сохранить как новую версию",
   "main_pane.save_changes": "Сохранить изменения",
   "main_pane.select_prompt": "Выберите промпт",
+  "main_pane.select_prompt_hint": "Выберите промпт в списке или нажмите ⌘K для поиска.",
   "main_pane.trash_readonly": "Этот промпт в корзине. Содержимое доступно только для чтения, пока промпт не восстановлен.",
   "main_pane.unsaved_changes": "Несохранённые изменения…",
   "main_pane.variation_created": "Вариация «{name}» создана",

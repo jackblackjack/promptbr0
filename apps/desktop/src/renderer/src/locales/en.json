@@ -497,6 +497,7 @@
   "main_pane.save_as_new_version": "Save as new version",
   "main_pane.save_changes": "Save changes",
   "main_pane.select_prompt": "Select a prompt",
+  "main_pane.select_prompt_hint": "Pick a prompt from the list, or press ⌘K to search.",
   "main_pane.trash_readonly": "This prompt is in Trash. Content is read-only until restored.",
   "main_pane.unsaved_changes": "Unsaved changes…",
   "main_pane.variation_created": "Variation \"{name}\" created",

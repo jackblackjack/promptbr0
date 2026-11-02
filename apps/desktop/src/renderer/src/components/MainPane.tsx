@@ -1016,7 +1016,7 @@ export function MainPaneEmpty() {
       <EmptyState
         icon={<FileText size={16} />}
         title={view.kind === "trash" ? t("main_pane.nothing_selected") : t("main_pane.select_prompt")}
-        hint="Pick a prompt from the list, or press ⌘K to search."
+        hint={t("main_pane.select_prompt_hint")}
       />
     </div>
   );
