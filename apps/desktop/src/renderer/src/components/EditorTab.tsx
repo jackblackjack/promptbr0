@@ -746,8 +746,8 @@ export const EditorTab = memo(function EditorTab({
                 disabled={!dirty || updateVersion.isPending || createVersion.isPending}
                 onClick={() => setDiscardDialogOpen(true)}
                 className={cx(
-                  "flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] font-medium text-ink-dim transition-colors",
-                  "hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-40",
+                  "flex items-center gap-1.5 rounded-md border border-danger/40 px-2.5 py-1 text-[12px] font-medium text-danger transition-colors",
+                  "hover:bg-danger-soft hover:border-danger/60 disabled:cursor-not-allowed disabled:opacity-40",
                 )}
               >
                 <Undo2 size={12} />
