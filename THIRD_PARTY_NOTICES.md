@@ -5556,7 +5556,7 @@ MIT License
     SOFTWARE
 ```
 
-## undici@7.29.1
+## undici@7.30.1
 
 License: MIT
 
@@ -5798,7 +5798,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-## zod@4.4.3
+## zod@4.6.6
 
 License: MIT
 
