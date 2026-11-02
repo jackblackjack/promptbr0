@@ -687,8 +687,11 @@ export function MainPane({ prompt }: { prompt: PromptDetail }) {
           </DropdownMenu.Root>
         </div>
 
-        {/* Tag row */}
+        {/* Description and tag row */}
         <div className="border-b border-line px-4 py-2">
+          {prompt.description && (
+            <p className="mb-2 break-words text-[12px] leading-relaxed text-ink-dim">{prompt.description}</p>
+          )}
           <TagEditor prompt={prompt} />
         </div>
 
