@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CollectionMoveInput } from "../../../shared/ipc.js";
+import type { CollectionImportApplyInput, CollectionImportPreviewDto, CollectionMoveInput } from "../../../shared/ipc.js";
 import {
   BookOpen,
   Clock,
+  Download,
   Folder,
   HardDrive,
   Inbox,
@@ -13,6 +14,7 @@ import {
   Settings,
   Star,
   Trash2,
+  Upload,
 } from "lucide-react";
 import iconUrl from "../assets/icon.png";
 import { useAppMutation, useAppInfo, useCollectionTree, useSuggestions, useTags } from "../hooks/use-data";
@@ -21,7 +23,7 @@ import { cx } from "../lib/time";
 import { useAppState, type AppView } from "../state/app-state";
 import { colorForName, SectionLabel } from "./ui";
 import { CollectionTree } from "./CollectionTree";
-import { ConfirmDialog, CreateCollectionDialog, NameDialog, RenameCollectionDialog } from "./dialogs";
+import { CollectionImportDialog, ConfirmDialog, CreateCollectionDialog, NameDialog, RenameCollectionDialog } from "./dialogs";
 import { SyncStatusRow } from "./SyncStatusRow";
 
 const COLLAPSED_FOLDERS_KEY = "pb:collapsedFolders";
@@ -239,6 +241,31 @@ export function LeftRail({
     { quiet: true, invalidate: true },
   );
 
+  const exportCollection = useAppMutation(
+    (input: { id: string; name: string }) => window.promptbr0.collections.exportCollection(input.id),
+    {
+      toast: (result, input) =>
+        result.canceled ? t("left_rail.export_canceled") : t("left_rail.export_success", { name: input.name }),
+    },
+  );
+  const [importPreview, setImportPreview] = useState<CollectionImportPreviewDto | null>(null);
+  const startCollectionImport = useAppMutation(() => window.promptbr0.collections.importPreview(), {
+    onSuccess: (result) => {
+      if (!result.canceled) setImportPreview(result.preview);
+    },
+  });
+  const applyCollectionImport = useAppMutation(
+    (input: CollectionImportApplyInput) => window.promptbr0.collections.importApply(input),
+    {
+      invalidate: true,
+      toast: (result) =>
+        result.outcome === "skipped"
+          ? t("left_rail.import_skipped", { name: result.rootName })
+          : t("left_rail.import_success", { name: result.rootName, collections: result.collectionsInserted, linked: result.membersLinked }),
+      onSuccess: () => setImportPreview(null),
+    },
+  );
+
   const visibleTags = showAllTags ? (tags ?? []) : (tags ?? []).slice(0, TAG_PREVIEW_COUNT);
 
   // Slim icon-only strip shown when the rail panel is collapsed, so nav
@@ -308,14 +335,27 @@ export function LeftRail({
           <div title={t("left_rail.collections_hint")}>
             <SectionLabel>{t("left_rail.collections")}</SectionLabel>
           </div>
-          <button
-            type="button"
-            onClick={() => setCollectionDialogOpen(true)}
-            className="mb-1 rounded p-0.5 text-ink-faint transition-colors hover:text-ink"
-            aria-label={t("left_rail.new_collection")}
-          >
-            <Plus size={13} />
-          </button>
+          <div className="mb-1 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => startCollectionImport.mutate(undefined)}
+              disabled={startCollectionImport.isPending}
+              className="rounded p-0.5 text-ink-faint transition-colors hover:text-ink disabled:opacity-40"
+              aria-label={t("left_rail.import_collection")}
+              title={t("left_rail.import_collection")}
+            >
+              <Upload size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setCollectionDialogOpen(true)}
+              className="rounded p-0.5 text-ink-faint transition-colors hover:text-ink"
+              aria-label={t("left_rail.new_collection")}
+              title={t("left_rail.new_collection")}
+            >
+              <Plus size={13} />
+            </button>
+          </div>
         </div>
         {tree && tree.children.length > 0 ? (
           <CollectionTree
@@ -466,6 +506,15 @@ export function LeftRail({
           setDeleteTarget(null);
         }}
       />
+      <CollectionImportDialog
+        open={importPreview !== null}
+        preview={importPreview}
+        pending={applyCollectionImport.isPending}
+        onApply={(input) => applyCollectionImport.mutate(input)}
+        onOpenChange={(open) => {
+          if (!open) setImportPreview(null);
+        }}
+      />
       {collectionMenu && (
         <div
           role="menu"
@@ -519,6 +568,18 @@ export function LeftRail({
           >
             <Folder size={13} />
             {t("left_rail.new_subcollection")}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              exportCollection.mutate({ id: collectionMenu.collection.id, name: collectionMenu.collection.name });
+              setCollectionMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-ink-dim outline-none hover:bg-hover hover:text-ink focus:bg-hover focus:text-ink"
+          >
+            <Download size={13} />
+            {t("left_rail.export_collection")}
           </button>
           <button
             type="button"

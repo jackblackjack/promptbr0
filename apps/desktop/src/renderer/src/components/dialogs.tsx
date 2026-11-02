@@ -3,7 +3,16 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { t } from "../lib/i18n";
-import type { CollectionDto, CollectionTreeDto, PromptBlockDto, RatingAddInput, TagDto } from "../../../shared/ipc.js";
+import type {
+  CollectionDto,
+  CollectionImportApplyInput,
+  CollectionImportApplyStrategy,
+  CollectionImportPreviewDto,
+  CollectionTreeDto,
+  PromptBlockDto,
+  RatingAddInput,
+  TagDto,
+} from "../../../shared/ipc.js";
 import { useAppMutation } from "../hooks/use-data";
 import type { ModelRef } from "../lib/ai-prefs";
 import { userErrorMessage } from "../lib/errors";
@@ -1022,6 +1031,115 @@ export function RenameCollectionDialog({
           </button>
         </div>
       </form>
+    </DialogShell>
+  );
+}
+
+/**
+ * Preview-and-confirm surface for a `.pbrcol` import: what the file contains,
+ * which members matched, and — when a top-level name collision exists — the
+ * skip/overwrite/duplicate strategy decision. Nothing is written until Apply.
+ */
+export function CollectionImportDialog({
+  open,
+  preview,
+  pending,
+  onApply,
+  onOpenChange,
+}: {
+  open: boolean;
+  preview: CollectionImportPreviewDto | null;
+  pending: boolean;
+  onApply: (input: CollectionImportApplyInput) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [strategy, setStrategy] = useState<CollectionImportApplyStrategy>("overwrite");
+  const rootName = preview?.rootName ?? "";
+  // Each new preview starts from the recommended default, even for the same file.
+  useEffect(() => {
+    if (open) setStrategy("overwrite");
+  }, [open, rootName]);
+
+  if (!preview) return null;
+  const collision = preview.rootCollision;
+  const strategies: CollectionImportApplyStrategy[] = ["overwrite", "duplicate", "skip"];
+
+  return (
+    <DialogShell open={open} onOpenChange={onOpenChange} title={t("collection_import.title")}>
+      <div className="space-y-4">
+        <p className="text-[13px] leading-relaxed text-ink-dim">
+          {collision
+            ? t("collection_import.collision_warning", { name: preview.rootName })
+            : t("collection_import.will_add", { name: preview.rootName })}
+        </p>
+
+        <div className="space-y-1 rounded-md border border-line bg-app p-2.5 text-[12px] text-ink-dim">
+          <div>{t("collection_import.subcollections", { count: preview.subcollectionCount, s: preview.subcollectionCount === 1 ? "" : "s" })}</div>
+          <div>{t("collection_import.members", { count: preview.memberCount, s: preview.memberCount === 1 ? "" : "s" })}</div>
+          <div>{t("collection_import.matched", { id: preview.matchedById, title: preview.matchedByTitle })}</div>
+        </div>
+
+        {preview.unmatchedTitles.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-ink-dim">
+              {t("collection_import.unmatched", { count: preview.unmatchedTitles.length, s: preview.unmatchedTitles.length === 1 ? "" : "s" })}
+            </div>
+            <ul className="max-h-24 space-y-0.5 overflow-y-auto rounded-md border border-line bg-app p-2 text-[12px] text-ink-faint">
+              {preview.unmatchedTitles.map((title) => (
+                <li key={title} className="truncate" title={title}>
+                  {title}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {collision && (
+          <div role="radiogroup" aria-label={t("collection_import.strategy_label")} className="space-y-1.5">
+            {strategies.map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={strategy === value}
+                onClick={() => setStrategy(value)}
+                className={cx(
+                  "block w-full rounded-md border p-2.5 text-left text-[12px] transition-colors",
+                  strategy === value ? "border-accent/50 bg-accent-soft" : "border-line hover:bg-hover",
+                )}
+              >
+                <span className={cx("font-medium", strategy === value ? "text-accent" : "text-ink")}>
+                  {t(`collection_import.strategy_${value}`)}
+                  {value === "overwrite" && <span className="ml-1.5 font-normal text-ink-faint">{t("collection_import.recommended")}</span>}
+                </span>
+                <span className="mt-0.5 block text-ink-faint">{t(`collection_import.strategy_${value}_hint`)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button type="button" className={ghostButtonClass} onClick={() => onOpenChange(false)}>
+            {t("dialog.cancel")}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() =>
+              onApply({
+                path: preview.path,
+                // Without a collision every strategy degrades to a plain add;
+                // "skip" simply carries no destructive intent.
+                strategy: collision ? strategy : "skip",
+                expectedRootCollision: collision,
+              })
+            }
+            className={primaryButtonClass}
+          >
+            {t("collection_import.apply")}
+          </button>
+        </div>
+      </div>
     </DialogShell>
   );
 }
