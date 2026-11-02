@@ -89,7 +89,7 @@ import {
   type SuggestionDto,
   type TagDto,
 } from "../shared/ipc.js";
-import { COLLECTION_FILE_FILTER, readCollectionFile, writeCollectionFile } from "./collection-file.js";
+import { COLLECTION_FILE_FILTER, collectionFileName, readCollectionFile, writeCollectionFile } from "./collection-file.js";
 import {
   toBranchDto,
   toCollectionDto,
@@ -664,7 +664,7 @@ function registerIpcHandlers(): void {
     if (!win) throw new Error("Cannot show a save dialog without a window");
     const result = await dialog.showSaveDialog(win, {
       title: "Export collection",
-      defaultPath: `${collection.name.replace(/[^\w.-]+/g, "-").toLowerCase()}.pbrcol`,
+      defaultPath: collectionFileName(collection.name),
       filters: [COLLECTION_FILE_FILTER],
     });
     if (result.canceled || !result.filePath) return { canceled: true };

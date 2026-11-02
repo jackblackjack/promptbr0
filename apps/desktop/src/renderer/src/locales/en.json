@@ -195,6 +195,7 @@
   "collection_import.subcollections": "{count} subcollection{s}",
   "collection_import.title": "Import collection",
   "collection_import.unmatched": "{count} prompt{s} not found in your library (will be skipped):",
+  "collection_import.unmatched_more": "…and {count} more",
   "collection_import.will_add": "\"{name}\" will be added as a new top-level collection.",
   "data.export-canceled": "Export canceled",
   "data.export-library": "Export library…",

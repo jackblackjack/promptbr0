@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { zipSync } from "fflate";
-import { CollectionFileError, readCollectionFile, writeCollectionFile } from "./collection-file.js";
+import { CollectionFileError, collectionFileName, readCollectionFile, writeCollectionFile } from "./collection-file.js";
 
 const payload = {
   meta: { kind: "collection", schemaVersion: 1, exportedAt: "2026-11-02T10:00:00.000Z" },
@@ -34,6 +34,26 @@ describe("writeCollectionFile", () => {
     const bad = { meta: { kind: "prompt", schemaVersion: 1, exportedAt: "2026-11-02T10:00:00.000Z" }, collection: payload.collection };
     expect(() => writeCollectionFile(filePath("bad.pbrcol"), bad, "0.2.0")).toThrow(/not a PromptBr0 collection/);
     expect(fs.existsSync(filePath("bad.pbrcol"))).toBe(false);
+  });
+});
+
+describe("collectionFileName", () => {
+  it("keeps plain ASCII names readable", () => {
+    expect(collectionFileName("Design system")).toBe("design-system.pbrcol");
+  });
+
+  it("keeps non-ASCII letters instead of collapsing them onto one dash", () => {
+    // The previous ASCII-only class produced "-" for every Cyrillic name,
+    // so any two such exports shared the same "-.pbrcol" default.
+    expect(collectionFileName("Дизайн")).toBe("дизайн.pbrcol");
+    expect(collectionFileName("API — Промпты v2!")).toBe("api-промпты-v2.pbrcol");
+  });
+
+  it("falls back to a stable stem when nothing survives trimming", () => {
+    // A leading dot would hide the file on Unix; symbol-only names must not
+    // produce "." / "-.pbrcol".
+    expect(collectionFileName("🎉")).toBe("collection.pbrcol");
+    expect(collectionFileName("...")).toBe("collection.pbrcol");
   });
 });
 

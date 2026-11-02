@@ -11,6 +11,23 @@ import { unzipSync, zipSync, type UnzipFileFilter } from "fflate";
 
 export const COLLECTION_FILE_EXTENSION = "pbrcol";
 export const COLLECTION_FILE_FILTER = { name: "PromptBr0 collection", extensions: [COLLECTION_FILE_EXTENSION] };
+
+/**
+ * Filesystem-safe default name for an exported collection. Keeps Unicode
+ * letters/digits — collections are routinely non-ASCII, and an ASCII-only
+ * class turns e.g. "Дизайн" into a dash, collapsing every such export onto
+ * the same "-.pbrcol" default. Leading dots would produce hidden files and
+ * dangling dashes are noise, so they are trimmed; a stem with nothing left
+ * (symbol-only names) falls back to a stable word.
+ */
+export function collectionFileName(name: string): string {
+  const stem = name
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .toLowerCase()
+    .replace(/^[-._]+|[-._]+$/g, "");
+  return `${stem || "collection"}.pbrcol`;
+}
+
 const ENTRY_NAME = "collection.json";
 /** Zip-bomb guard: collections are tiny; 8 MiB of JSON is already absurd. */
 const MAX_ENTRY_BYTES = 8 * 1024 * 1024;

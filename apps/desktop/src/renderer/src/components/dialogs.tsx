@@ -1035,6 +1035,9 @@ export function RenameCollectionDialog({
   );
 }
 
+/** Bound on unmatched titles actually mounted in the DOM (see the list below). */
+const MAX_RENDERED_UNMATCHED = 200;
+
 /**
  * Preview-and-confirm surface for a `.pbrcol` import: what the file contains,
  * which members matched, and — when a top-level name collision exists — the
@@ -1084,13 +1087,21 @@ export function CollectionImportDialog({
             <div className="text-xs font-medium text-ink-dim">
               {t("collection_import.unmatched", { count: preview.unmatchedTitles.length, s: preview.unmatchedTitles.length === 1 ? "" : "s" })}
             </div>
+            {/* The count above is authoritative; the DOM is not — a hostile
+                file can carry hundreds of thousands of members, and mounting
+                one <li> per title would freeze the renderer on preview. */}
             <ul className="max-h-24 space-y-0.5 overflow-y-auto rounded-md border border-line bg-app p-2 text-[12px] text-ink-faint">
-              {preview.unmatchedTitles.map((title) => (
-                <li key={title} className="truncate" title={title}>
+              {preview.unmatchedTitles.slice(0, MAX_RENDERED_UNMATCHED).map((title, index) => (
+                <li key={`${index}:${title}`} className="truncate" title={title}>
                   {title}
                 </li>
               ))}
             </ul>
+            {preview.unmatchedTitles.length > MAX_RENDERED_UNMATCHED && (
+              <div className="text-[11px] text-ink-faint">
+                {t("collection_import.unmatched_more", { count: preview.unmatchedTitles.length - MAX_RENDERED_UNMATCHED })}
+              </div>
+            )}
           </div>
         )}
 

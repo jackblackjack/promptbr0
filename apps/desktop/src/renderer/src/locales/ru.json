@@ -195,6 +195,7 @@
   "collection_import.subcollections": "Подколлекций: {count}",
   "collection_import.title": "Импорт коллекции",
   "collection_import.unmatched": "Не найдено в библиотеке (будет пропущено): {count}",
+  "collection_import.unmatched_more": "…и ещё {count}",
   "collection_import.will_add": "«{name}» будет добавлена как новая коллекция верхнего уровня.",
   "data.export-canceled": "Экспорт отменён",
   "data.export-library": "Экспорт библиотеки…",

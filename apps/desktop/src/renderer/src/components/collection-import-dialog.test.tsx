@@ -84,4 +84,15 @@ describe("CollectionImportDialog", () => {
     renderApp(<CollectionImportDialog open preview={null} pending={false} onApply={vi.fn()} onOpenChange={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
   });
+
+  it("mounts at most 200 unmatched titles and reports the rest as a count", () => {
+    // A hostile file can carry huge member lists; mounting one <li> per
+    // title would freeze the renderer. The label keeps the true count.
+    const preview = { ...basePreview, unmatchedTitles: Array.from({ length: 250 }, (_, i) => `Ghost ${i + 1}`) };
+    renderApp(<CollectionImportDialog open preview={preview} pending={false} onApply={vi.fn()} onOpenChange={vi.fn()} />);
+
+    expect(screen.getByText(/250 prompts not found/)).toBeTruthy();
+    expect(screen.getAllByRole("listitem")).toHaveLength(200);
+    expect(screen.getByText(/and 50 more/)).toBeTruthy();
+  });
 });
