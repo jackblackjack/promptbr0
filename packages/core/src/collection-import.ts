@@ -212,12 +212,17 @@ export function preflightCollectionImport(input: unknown): CollectionTransferFil
         memberValid = false;
       }
       if (!memberValid) continue;
-      if (seenPromptIds.has(raw.promptId as string)) {
+      // Every write path in the app normalizes names/titles with trim (Zod
+      // schemas; the CLI is the one exception and may store padded names), so
+      // the normalized payload trims too — never rejecting legitimate exports,
+      // never letting a hostile file inject padding the UI cannot produce.
+      const promptId = (raw.promptId as string).trim();
+      if (seenPromptIds.has(promptId)) {
         issue(memberPath, "duplicate_member", "Same prompt referenced twice in one collection");
         continue;
       }
-      seenPromptIds.add(raw.promptId as string);
-      members.push({ promptId: raw.promptId as string, title: raw.title as string, sortOrder: raw.sortOrder as number });
+      seenPromptIds.add(promptId);
+      members.push({ promptId, title: (raw.title as string).trim(), sortOrder: raw.sortOrder as number });
     }
 
     const children: CollectionNode[] = [];
@@ -225,18 +230,19 @@ export function preflightCollectionImport(input: unknown): CollectionTransferFil
     for (const [index, raw] of (node.children as unknown[]).entries()) {
       const childPath = `${path}.children[${index}]`;
       if (isRecord(raw) && typeof raw.name === "string") {
-        if (seenChildNames.has(raw.name)) {
+        const childName = raw.name.trim();
+        if (seenChildNames.has(childName)) {
           issue(childPath, "duplicate_child_name", "Two sibling collections share one name");
           continue;
         }
-        seenChildNames.add(raw.name);
+        seenChildNames.add(childName);
       }
       const child = walkNode(raw, childPath, depth + 1);
       if (child) children.push(child);
     }
 
     return {
-      name: node.name as string,
+      name: (node.name as string).trim(),
       sortOrder: node.sortOrder as number,
       members,
       children,
@@ -305,11 +311,14 @@ export interface MemberResolution {
 export function resolveMemberRef(index: LivePromptIndex, promptId: string, title: string): MemberResolution {
   if (index.byId.has(promptId)) return { status: "id", promptId };
 
-  const exact = index.exact.get(title);
+  // Trim once, mirroring resolvePrompt's handling of agent-supplied names:
+  // file titles are matching hints, not exact stored values.
+  const ref = title.trim();
+  const exact = index.exact.get(ref);
   if (exact && exact.length === 1) return { status: "title", promptId: exact[0]! };
   if (exact && exact.length > 1) return { status: "unmatched", promptId: null };
 
-  const lower = title.toLowerCase();
+  const lower = ref.toLowerCase();
   const ci = index.caseInsensitive.get(lower);
   if (ci && ci.length === 1) return { status: "title", promptId: ci[0]! };
   if (ci && ci.length > 1) return { status: "unmatched", promptId: null };

@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  buildLivePromptIndex,
   CollectionImportValidationError,
   MAX_COLLECTION_DEPTH,
   openMemoryDatabase,
   PromptLibrary,
+  resolveMemberRef,
   type CollectionNode,
   type CollectionTransferFile,
   type Database,
@@ -369,6 +371,68 @@ describe("preflightCollectionImport rejects", () => {
     let deep: CollectionNode = node("leaf");
     for (let i = 0; i < MAX_COLLECTION_DEPTH + 1; i += 1) deep = node(`level-${i}`, { children: [deep] });
     expectIssues(file(deep), "children", "invalid_value");
+  });
+});
+
+describe("normalization (trim) and name-scope edge cases", () => {
+  it("normalizes padded names and titles instead of rejecting them", () => {
+    // The CLI stores names verbatim (no trim), so padded names exist in real
+    // libraries and must round-trip — normalized the same way the UI would
+    // have written them, never breaking the export. Exact-match collision
+    // still compares the normalized file name against stored names, so a
+    // padded root re-imports as a sibling rather than replacing its source.
+    const root = lib.createCollection({ name: "  Padded  " });
+    lib.createCollection({ name: "  Padded  ", parentCollectionId: root.id });
+    const exported = lib.exportCollection(root.id);
+
+    const preview = lib.previewCollectionImport(exported);
+    expect(preview.rootName).toBe("Padded");
+    const result = lib.importCollection(exported, { strategy: "overwrite" });
+    expect(result.outcome).toBe("added");
+    expect(result.rootName).toBe("Padded");
+    expect(result.collectionsInserted).toBe(2);
+    const imported = lib.listCollectionsByParent(null).find((row) => row.name === "Padded");
+    expect(imported).toBeDefined();
+    expect(lib.listCollectionsByParent(null).find((row) => row.id === imported!.id)).toBeDefined();
+    // The imported subtree's child carries the trimmed name too.
+    expect(lib.listCollectionsByParent(imported!.id).map((row) => row.name)).toEqual(["Padded"]);
+  });
+
+  it("detects sibling-name duplicates after trimming", () => {
+    try {
+      lib.previewCollectionImport(file(node("P", { children: [node("Twin "), node("Twin")] })));
+      expect.unreachable();
+    } catch (error) {
+      const issues = (error as CollectionImportValidationError).issues;
+      expect(issues.some((issue) => issue.code === "duplicate_child_name")).toBe(true);
+    }
+  });
+
+  it("matches member titles through surrounding whitespace", () => {
+    const prompt = lib.createPrompt({ title: "Audit", content: "a" });
+    const result = lib.importCollection(
+      file(node("Padded titles", { members: [{ promptId: "ghost", title: "  Audit  ", sortOrder: 0 }] })),
+      { strategy: "overwrite" },
+    );
+    expect(result.membersUnmatched).toBe(0);
+    expect(memberIds(db, rootIds()[0]!)).toEqual([prompt.id]);
+  });
+
+  it("resolveMemberRef trims the title before the ladder", () => {
+    const index = buildLivePromptIndex([{ id: "p1", title: "Audit" }]);
+    expect(resolveMemberRef(index, "ghost", "  Audit  ")).toEqual({ status: "title", promptId: "p1" });
+  });
+
+  it("treats a same-named nested collection as out of scope for the root collision", () => {
+    const parent = lib.createCollection({ name: "Holder" });
+    const nestedId = lib.createCollection({ name: "Design", parentCollectionId: parent.id }).id;
+
+    const result = lib.importCollection(designFile([]), { strategy: "overwrite" });
+
+    // No root-level "Design" exists: plain add, and the nested one is untouched.
+    expect(result.outcome).toBe("added");
+    expect(lib.listCollections().some((row) => row.id === nestedId && row.parent_collection_id === parent.id)).toBe(true);
+    expect(lib.listCollectionsByParent(null).map((row) => row.name)).toEqual(["Holder", "Design"]);
   });
 });
 
