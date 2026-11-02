@@ -6,15 +6,20 @@ best.
 
 ## The run window
 
-Select **Run** in the prompt header to open the **Generated prompt** window.
+Select **Run** in the prompt header to open the **Prompt preparation** window.
 It shows the full text that will be sent: the prompt's content with its active
 [optional blocks](prompt-management.md#optional-blocks) appended at the end.
 Everything happens in this one window:
 
-- **Edit the text.** The text is editable, and your edits apply to this run
-  only — the saved prompt stays untouched. Fill `{{variable_name}}` fields by
-  replacing them inline; anything left unfilled is sent to the model as-is, so
-  you always see exactly what leaves the app.
+- **Edit the text.** The text starts read-only: run the prompt exactly as
+  assembled, or turn on **Edit mode** for manual tweaks. Edits apply to this
+  run only — the saved prompt stays untouched. Prompts with
+  `{{variable_name}}` fields show a fill panel below the text: type a value
+  there and every occurrence is substituted at once (clearing the field
+  restores the placeholder). Filling variables works whether editing is on
+  or not, and fills survive block toggles. The **Clear unfilled** checkbox
+  is on by default: variables without values are removed when you copy or
+  run; turn it off to send unfilled placeholders to the model as-is.
 - **Toggle blocks.** If the prompt has optional blocks, each one shows a
   switch. Flipping a switch rebuilds the text; if you have already edited the
   text by hand, PromptBr0 asks before discarding those edits.

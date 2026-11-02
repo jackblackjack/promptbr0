@@ -63,9 +63,9 @@ Add any model IDs the catalog doesn't know about (e.g. locally pulled Ollama mod
 
 ## Step 4: Run Against Multiple Models in Parallel
 
-1. Select **Run** on the prompt: the **Generated prompt** window opens with the
-   full text that will be sent. Fill in any `{{variable}}` fields right in the
-   text — for example:
+1. Select **Run** on the prompt: the **Prompt preparation** window opens with the
+   full text that will be sent. Fill in any `{{variable}}` fields in the panel
+   below the text — every occurrence is substituted at once. For example:
    - `language`: `typescript`
    - `source_code`: `function calc(a,b,c){ if(c=='add') return a+b; if(c=='sub') return a-b; return 0; }`
 2. In the **Model Picker** at the bottom of the window, select up to 6 models across your connected providers (e.g. a Claude, a GPT, and a Gemini model).
