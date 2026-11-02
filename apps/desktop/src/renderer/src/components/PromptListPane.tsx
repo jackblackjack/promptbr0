@@ -401,6 +401,7 @@ export function PromptListPane({
     y: number;
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<PromptSummary | null>(null);
+  const [descriptionTarget, setDescriptionTarget] = useState<PromptSummary | null>(null);
   const [moveTarget, setMoveTarget] = useState<PromptDetail | null>(null);
   const [duplicateTarget, setDuplicateTarget] = useState<DuplicateSourceTarget | null>(null);
   const [duplicatePromptTarget, setDuplicatePromptTarget] = useState<DuplicateSourceTarget | null>(null);
@@ -432,6 +433,11 @@ export function PromptListPane({
     ({ promptId, title }: { promptId: string; title: string }) =>
       window.promptbr0.prompts.update(promptId, { title }),
     { toast: t("main_pane.prompt_renamed") },
+  );
+  const updateDescription = useAppMutation(
+    ({ promptId, description }: { promptId: string; description: string }) =>
+      window.promptbr0.prompts.update(promptId, { description }),
+    { toast: t("main_pane.description_updated") },
   );
   const exportPrompt = useAppMutation(
     (promptId: string) => window.promptbr0.prompts.exportJson(promptId),
@@ -790,6 +796,14 @@ export function PromptListPane({
                 }}
               />
               <PromptMenuItem
+                icon={<FileText size={13} />}
+                label={t("main_pane.edit_description")}
+                onClick={() => {
+                  setDescriptionTarget(contextMenu.prompt);
+                  setContextMenu(null);
+                }}
+              />
+              <PromptMenuItem
                 icon={<FolderInput size={13} />}
                 label={t("prompt_list.move-to-collection")}
                 onClick={() => {
@@ -860,6 +874,21 @@ export function PromptListPane({
         submitLabel={t("dialog.rename")}
         onSubmit={(title) => {
           if (renameTarget) rename.mutate({ promptId: renameTarget.id, title });
+        }}
+      />
+      <NameDialog
+        open={descriptionTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDescriptionTarget(null);
+        }}
+        title={t("main_pane.edit_description")}
+        label={t("dialog.description")}
+        initialValue={descriptionTarget?.description ?? ""}
+        placeholder={t("main_pane.description_placeholder")}
+        onSubmit={(description) => {
+          if (descriptionTarget) {
+            updateDescription.mutate({ promptId: descriptionTarget.id, description });
+          }
         }}
       />
       {moveTarget && (

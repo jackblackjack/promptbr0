@@ -158,6 +158,7 @@ describe("PromptListPane context menu", () => {
 
     const menu = await openPromptMenu(user);
     expect(menu.getByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
+    expect(menu.getByRole("menuitem", { name: "Edit description" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Move to collection…" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Duplicate as new prompt…" })).toBeInTheDocument();
     expect(menu.getByRole("menuitem", { name: "Duplicate selected version as variation…" })).toBeInTheDocument();
@@ -179,6 +180,23 @@ describe("PromptListPane context menu", () => {
     await user.click(screen.getByRole("button", { name: "Rename" }));
 
     expect(bridge.prompts.update).toHaveBeenCalledWith(beta.id, { title: "Renamed Beta" });
+  });
+
+  it("edits the right-clicked prompt's description", async () => {
+    const user = userEvent.setup();
+    bridge.prompts.update.mockResolvedValue(betaDetail);
+    renderApp(<PaneInView view={{ kind: "library" }} />);
+
+    const menu = await openPromptMenu(user);
+    await user.click(menu.getByRole("menuitem", { name: "Edit description" }));
+    const description = await screen.findByLabelText("Description");
+    await user.type(description, "Beta prompt description");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(bridge.prompts.update).toHaveBeenCalledWith(beta.id, {
+      description: "Beta prompt description",
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("Description updated");
   });
 
   it("moves the right-clicked prompt to a collection", async () => {
