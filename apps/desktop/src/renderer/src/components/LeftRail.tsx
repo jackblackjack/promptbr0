@@ -99,7 +99,7 @@ export function LeftRail({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const { view, setView, selectPrompt, openSettings, openNewPrompt, filterByTag, filters } = useAppState();
+  const { view, setView, selectPrompt, openSettings, openNewPrompt, filterByTag, filters, setFilters } = useAppState();
   const { data: tags } = useTags();
   const { data: tree } = useCollectionTree();
   const { data: appInfo } = useAppInfo();
@@ -116,6 +116,8 @@ export function LeftRail({
     x: number;
     y: number;
   } | null>(null);
+  const [tagMenu, setTagMenu] = useState<{ tag: { id: string; name: string }; x: number; y: number } | null>(null);
+  const [deleteTagTarget, setDeleteTagTarget] = useState<{ id: string; name: string } | null>(null);
   /** Which collection triggered "New subcollection". */
   const [createTargetParent, setCreateTargetParent] = useState<string | null>(null);
   // Expanded folder ids, persisted in localStorage.
@@ -175,9 +177,39 @@ export function LeftRail({
     };
   }, [collectionMenu]);
 
+  useEffect(() => {
+    if (!tagMenu) return;
+    const close = () => setTagMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [tagMenu]);
+
   const createTag = useAppMutation((name: string) => window.promptbr0.tags.create({ name, color: colorForName(name) }), {
     toast: (tag) => t("left_rail.tag_created", { name: tag.name }),
   });
+  const deleteTag = useAppMutation(
+    (input: { id: string; name: string }) => window.promptbr0.tags.delete({ id: input.id }),
+    {
+      // The name travels in the mutation input: the target state is cleared
+      // on confirm, before the success toast fires.
+      toast: (_result, input) => t("left_rail.tag_deleted", { name: input.name }),
+      onSuccess: (_result, input) => {
+        // A deleted tag cannot keep filtering the library view.
+        if (filters.tagIds.includes(input.id)) {
+          setFilters({ ...filters, tagIds: filters.tagIds.filter((id) => id !== input.id) });
+        }
+      },
+    },
+  );
   const createCollection = useAppMutation(
     (input: { name: string; parentCollectionId: string | null }) =>
       window.promptbr0.collections.create(input),
@@ -325,6 +357,10 @@ export function LeftRail({
               type="button"
               aria-pressed={view.kind === "library" && filters.tagIds.includes(tag.id)}
               onClick={() => filterByTag(tag.id)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setTagMenu({ tag: { id: tag.id, name: tag.name }, x: event.clientX, y: event.clientY });
+              }}
               className={cx(
                 "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] transition-colors",
                 view.kind === "library" && filters.tagIds.includes(tag.id)
@@ -502,6 +538,48 @@ export function LeftRail({
           </button>
         </div>
       )}
+      {tagMenu && (
+        <div
+          role="menu"
+          aria-label={t("left_rail.actions_for", { name: tagMenu.tag.name })}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="pb-menu fixed z-50 w-44 rounded-lg border border-line-strong bg-raised p-1 shadow-xl shadow-black/40"
+          style={{
+            left: Math.max(8, Math.min(tagMenu.x, window.innerWidth - 176)),
+            top: Math.max(8, Math.min(tagMenu.y, window.innerHeight - 56)),
+          }}
+        >
+          <button
+            autoFocus
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setDeleteTagTarget(tagMenu.tag);
+              setTagMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-red-500 outline-none hover:bg-hover hover:text-red-400 focus:bg-hover focus:text-red-400"
+          >
+            <Trash2 size={13} />
+            {t("left_rail.delete_tag")}
+          </button>
+        </div>
+      )}
+      <ConfirmDialog
+        open={deleteTagTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTagTarget(null);
+        }}
+        title={t("left_rail.delete_tag")}
+        description={t("left_rail.delete_tag_desc", { name: deleteTagTarget?.name ?? "" })}
+        confirmLabel={t("dialog.delete")}
+        danger
+        onConfirm={() => {
+          if (deleteTagTarget) {
+            deleteTag.mutate({ id: deleteTagTarget.id, name: deleteTagTarget.name });
+          }
+          setDeleteTagTarget(null);
+        }}
+      />
     </aside>
   );
 }

@@ -180,6 +180,7 @@ export function createMockBridge(): MockBridge {
       list: vi.fn(async () => []),
       addToPrompt: vi.fn(async () => {}),
       removeFromPrompt: vi.fn(async () => {}),
+      delete: vi.fn(async () => {}),
     },
     collections: {
       create: vi.fn(notStubbed),

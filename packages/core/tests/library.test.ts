@@ -875,6 +875,23 @@ describe("tags and collections", () => {
     expect(lib.listPrompts({ tagIds: [other.id] }).map((p) => p.id)).toEqual([p2.id]);
   });
 
+  it("deletes a tag, unlinks it from every prompt, and keeps the prompts", () => {
+    const p1 = lib.createPrompt({ title: "P1", content: "x" });
+    const p2 = lib.createPrompt({ title: "P2", content: "y" });
+    const tag = lib.createTag({ name: "coding" });
+    lib.addTagToPrompt(p1.id, tag.id);
+    lib.addTagToPrompt(p2.id, tag.id);
+
+    lib.deleteTag(tag.id);
+
+    expect(lib.listTags().find((t) => t.id === tag.id)).toBeUndefined();
+    expect(lib.listTagsForPrompt(p1.id)).toEqual([]);
+    expect(lib.listTagsForPrompt(p2.id)).toEqual([]);
+    // Prompts remain (list order is by recency, so compare as a set).
+    expect(lib.listPrompts().map((p) => p.id).sort()).toEqual([p1.id, p2.id].sort());
+    expect(() => lib.deleteTag(tag.id)).toThrow("Tag not found: ");
+  });
+
   it("manages collection membership and counts", () => {
     const p1 = lib.createPrompt({ title: "P1", content: "x" });
     const p2 = lib.createPrompt({ title: "P2", content: "y" });

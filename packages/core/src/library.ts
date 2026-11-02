@@ -1182,6 +1182,24 @@ export class PromptLibrary {
     })();
   }
 
+  /** Deletes a tag and unlinks it from every prompt; prompts themselves remain. */
+  deleteTag(tagId: string): void {
+    const tag = this.get<TagRow>("SELECT * FROM tags WHERE id = ?", tagId);
+    if (!tag) throw new Error(`Tag not found: ${tagId}`);
+    this.db.transaction(() => {
+      const affected = this.all<{ prompt_id: string }>(
+        "SELECT prompt_id FROM prompt_tags WHERE tag_id = ?",
+        tagId,
+      );
+      // Children first — prompt_tags references tags without ON DELETE CASCADE.
+      this.run("DELETE FROM prompt_tags WHERE tag_id = ?", tagId);
+      this.run("DELETE FROM tags WHERE id = ?", tagId);
+      for (const row of affected) {
+        refreshPromptSearchMetadata(this.db, row.prompt_id);
+      }
+    })();
+  }
+
   /** Replaces the full tag set of a prompt. */
   setPromptTags(promptId: string, tagIds: string[]): void {
     this.mustGetPrompt(promptId);

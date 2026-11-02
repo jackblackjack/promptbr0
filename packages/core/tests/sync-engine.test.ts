@@ -197,6 +197,28 @@ describe("sync engine", () => {
     },
   );
 
+  it("deleting a tag unlinks it from prompts on the other device and keeps the prompts", () => {
+    const a = rig();
+    const b = rig();
+    const tag = a.lib.createTag({ name: "shared" });
+    const prompt = a.lib.createPrompt({ title: "Tagged", content: "c", tagIds: [tag.id] });
+    a.engine.refineDirty();
+    syncBoth(a, b);
+
+    expect(b.lib.listTags().map((t) => t.name)).toEqual(["shared"]);
+    expect(b.lib.listTagsForPrompt(prompt.id).map((t) => t.id)).toEqual([tag.id]);
+
+    a.lib.deleteTag(tag.id);
+    a.engine.refineDirty();
+    syncBoth(a, b);
+
+    expect(b.lib.listTags()).toEqual([]);
+    expect(b.lib.listTagsForPrompt(prompt.id)).toEqual([]);
+    expect(b.lib.listPrompts().map((p) => p.id)).toEqual([prompt.id]);
+    a.db.close();
+    b.db.close();
+  });
+
   it("incremental FTS removes a remote note from metadata without rewriting versions", () => {
     const a = rig();
     const b = rig();

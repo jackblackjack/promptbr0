@@ -121,6 +121,8 @@ export type TagCreateInput = z.infer<typeof tagCreateSchema>;
 
 export const tagOnPromptSchema = z.object({ promptId: id, tagId: id });
 
+export const tagDeleteSchema = z.object({ id });
+
 export const collectionCreateSchema = z.object({
   name: z.string().trim().min(1).max(200),
   parentCollectionId: z.string().trim().min(1).max(200).nullable().optional(),
@@ -1189,6 +1191,8 @@ export interface PromptBr0Api {
     list(): Promise<TagDto[]>;
     addToPrompt(promptId: string, tagId: string): Promise<void>;
     removeFromPrompt(promptId: string, tagId: string): Promise<void>;
+    /** Deletes the tag and unlinks it from every prompt; prompts remain. */
+    delete(input: { id: string }): Promise<void>;
   };
   collections: {
     create(input: { name: string; parentCollectionId?: string | null }): Promise<CollectionDto>;

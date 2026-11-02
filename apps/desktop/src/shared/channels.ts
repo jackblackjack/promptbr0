@@ -32,6 +32,7 @@ export const IPC_CHANNELS = {
   tagList: "tag:list",
   tagAddToPrompt: "tag:add-to-prompt",
   tagRemoveFromPrompt: "tag:remove-from-prompt",
+  tagDelete: "tag:delete",
   collectionCreate: "collection:create",
   collectionList: "collection:list",
   collectionUpdate: "collection:update",

@@ -78,6 +78,7 @@ const api: PromptBr0Api = {
     list: () => invoke(IPC_CHANNELS.tagList),
     addToPrompt: (promptId, tagId) => invoke(IPC_CHANNELS.tagAddToPrompt, { promptId, tagId }),
     removeFromPrompt: (promptId, tagId) => invoke(IPC_CHANNELS.tagRemoveFromPrompt, { promptId, tagId }),
+    delete: (input) => invoke(IPC_CHANNELS.tagDelete, input),
   },
   collections: {
     create: (input: { name: string; parentCollectionId?: string | null }) =>

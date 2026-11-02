@@ -63,6 +63,7 @@ import {
   suggestionRejectSchema,
   tagCreateSchema,
   tagOnPromptSchema,
+  tagDeleteSchema,
   traySettingsSchema,
   updateOpenDownloadSchema,
   updateSetAutomaticChecksSchema,
@@ -543,6 +544,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.tagRemoveFromPrompt, (_e, payload: unknown) => {
     const { promptId, tagId } = tagOnPromptSchema.parse(payload);
     lib.removeTagFromPrompt(promptId, tagId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.tagDelete, (_e, payload: unknown) => {
+    lib.deleteTag(tagDeleteSchema.parse(payload).id);
   });
 
   // ------------------------------------------------------------ collections

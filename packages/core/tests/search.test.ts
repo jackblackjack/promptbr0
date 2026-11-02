@@ -286,6 +286,11 @@ describe("incremental search maintenance", () => {
     expect(lib.search("nebula").map((row) => row.promptId)).toEqual([prompt.id]);
     change(() => { lib.deleteNote(noteId); });
     expect(lib.search("nebula")).toEqual([]);
+    // Deleting an attached tag unlinks it everywhere and refreshes the same
+    // single metadata row; versions are never rewritten.
+    change(() => { lib.deleteTag(tag.id); });
+    expect(lib.search("astronomy")).toEqual([]);
+    expect(lib.listTags().find((t) => t.id === tag.id)).toBeUndefined();
   });
 
   it("creates, amends and deletes only the selected version row", () => {
