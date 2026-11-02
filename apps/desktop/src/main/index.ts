@@ -712,7 +712,7 @@ function registerIpcHandlers(): void {
 
   handle(IPC_CHANNELS.aiProviderCreate, (_e, payload: unknown) => {
     const provider = aiCreateProvider(aiDeps, aiProviderCreateSchema.parse(payload));
-    console.log(`[main] created AI provider ${provider.id} (${provider.type}: ${provider.name})`);
+    console.log(`[main] created AI provider ${provider.id} (${provider.type})`);
     return provider;
   });
 
