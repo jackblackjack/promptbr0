@@ -12,9 +12,8 @@ The app reaches the network only to call a model provider, refresh the model
 catalog from [models.dev](https://models.dev), ask GitHub about a newer release,
 or sync with a device you paired yourself.
 
-Status: **0.1.0**, pre-1.0, so details can still move. Installers, when a
-release is published, are attached to
-[GitHub Releases](https://github.com/jackblackjack/promptbr0/releases).
+Status: **0.1.0**, pre-1.0, so details can still move. Installers are attached
+to [GitHub Releases](https://github.com/jackblackjack/promptbr0/releases).
 
 ## What it covers
 
@@ -29,12 +28,13 @@ release is published, are attached to
 
 ## Install and run
 
-When a release is published, desktop installers for macOS, Windows, and Linux
-are attached to [GitHub Releases](https://github.com/jackblackjack/promptbr0/releases).
-Until then, build from source. The CLI also comes from this repository; the
-npm packages are not published yet.
+Desktop installers for macOS, Windows, and Linux are attached to the latest
+[GitHub Release](https://github.com/jackblackjack/promptbr0/releases/latest).
+The builds are not code-signed, so macOS Gatekeeper, Windows SmartScreen, or
+a similar OS check may ask you to confirm the first launch. The CLI comes
+from this repository; the npm packages are not published yet.
 
-Building from source needs Node.js 22+ and pnpm 11.7.0:
+To build from source instead, you need Node.js 22+ and pnpm 11.7.0:
 
 ```sh
 corepack enable
