@@ -12,7 +12,7 @@ The app reaches the network only to call a model provider, refresh the model
 catalog from [models.dev](https://models.dev), ask GitHub about a newer release,
 or sync with a device you paired yourself.
 
-Status: **0.1.0**, pre-1.0, so details can still move. Installers are attached
+Status: **0.2.0**, pre-1.0, so details can still move. Installers are attached
 to [GitHub Releases](https://github.com/jackblackjack/promptbr0/releases).
 
 ## What it covers
