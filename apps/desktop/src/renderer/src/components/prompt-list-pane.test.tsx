@@ -131,6 +131,32 @@ beforeEach(() => {
   bridge.collections.list.mockResolvedValue([
     { id: "collection-1", name: "Work", sortOrder: 0, parentId: null, promptCount: 0 },
   ]);
+  bridge.collections.tree.mockResolvedValue({
+    id: "root",
+    name: "",
+    sortOrder: 0,
+    parentId: null,
+    promptCount: 0,
+    children: [
+      {
+        id: "collection-1",
+        name: "Work",
+        sortOrder: 0,
+        parentId: null,
+        promptCount: 0,
+        children: [
+          {
+            id: "collection-2",
+            name: "Archive",
+            sortOrder: 0,
+            parentId: "collection-1",
+            promptCount: 0,
+            children: [],
+          },
+        ],
+      },
+    ],
+  });
 });
 
 describe("PromptListPane context menu", () => {
@@ -207,6 +233,10 @@ describe("PromptListPane context menu", () => {
     await user.click(menu.getByRole("menuitem", { name: "Move to collection…" }));
     const dialog = await screen.findByRole("dialog", { name: "Move to collection" });
     const work = within(dialog).getByRole("checkbox", { name: "Work" });
+    // The hierarchy is nested: Archive's row wrapper sits inside Work's.
+    const archive = within(dialog).getByRole("checkbox", { name: "Archive" });
+    const workWrapper = work.closest("div")!.parentElement!;
+    expect(workWrapper).toContainElement(archive.closest("div")!.parentElement!);
     await user.click(work);
     expect(work).toBeChecked();
     expect(bridge.collections.addPrompt).not.toHaveBeenCalled();

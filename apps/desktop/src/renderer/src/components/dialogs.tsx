@@ -43,7 +43,7 @@ export function DialogShell({
             "rounded-xl border border-line-strong bg-panel p-5 shadow-2xl shadow-black/50 focus:outline-none",
           )}
         >
-          <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="mb-4 flex shrink-0 items-center justify-between gap-2">
             <Dialog.Title className="min-w-0 break-words text-sm font-semibold text-ink">{title}</Dialog.Title>
             <Dialog.Close
               aria-label={t("dialog.close")}

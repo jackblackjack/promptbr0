@@ -1,7 +1,9 @@
 import { t } from "../lib/i18n";
-import { useEffect, useRef, useState } from "react";
-import type { PromptDetail } from "../../../shared/ipc.js";
-import { useAppMutation, useCollections } from "../hooks/use-data";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
+import type { CollectionTreeDto, PromptDetail } from "../../../shared/ipc.js";
+import { useAppMutation, useCollectionTree } from "../hooks/use-data";
+import { cx } from "../lib/time";
 import { DialogShell } from "./dialogs";
 
 export function MoveToCollectionDialog({
@@ -13,8 +15,12 @@ export function MoveToCollectionDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { data: collections } = useCollections();
+  const { data: tree } = useCollectionTree();
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>(prompt.collectionIds);
+  // Inverted expansion: a folder is collapsed only when listed here, so the
+  // whole hierarchy is visible the moment the dialog opens. The component
+  // stays mounted between opens, so the choice persists across uses.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const wasOpen = useRef(false);
   const previousPromptId = useRef(prompt.id);
   const updateMemberships = useAppMutation(
@@ -39,6 +45,22 @@ export function MoveToCollectionDialog({
     previousPromptId.current = prompt.id;
   }, [open, prompt.id, prompt.collectionIds]);
 
+  const toggleNode = (id: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleMember = (id: string, checked: boolean) => {
+    setSelectedCollectionIds((current) => {
+      if (checked) return current.includes(id) ? current : [...current, id];
+      return current.filter((member) => member !== id);
+    });
+  };
+
   const save = async () => {
     const current = new Set(prompt.collectionIds);
     const selected = new Set(selectedCollectionIds);
@@ -58,51 +80,72 @@ export function MoveToCollectionDialog({
     }
   };
 
+  const renderNode = (node: CollectionTreeDto, depth: number): ReactNode => {
+    const hasChildren = node.children.length > 0;
+    const isExpanded = !collapsed.has(node.id);
+    const member = selectedCollectionIds.includes(node.id);
+    const indentPx = depth * 12;
+
+    return (
+      <div key={node.id}>
+        <div className="relative flex items-center rounded-md hover:bg-hover">
+          {/* The label owns the checkbox and the name; the chevron stays a
+              sibling — interactive elements cannot be nested (same layout as
+              CollectionTree). */}
+          <label
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 pl-2 pr-1 text-[13px] text-ink-dim"
+            style={{ marginLeft: `${indentPx}px` }}
+          >
+            <input
+              type="checkbox"
+              aria-label={node.name}
+              checked={member}
+              disabled={updateMemberships.isPending}
+              onChange={(event) => toggleMember(node.id, event.currentTarget.checked)}
+              className="accent-accent"
+            />
+            <span className="min-w-0 truncate">{node.name}</span>
+            <span className="ml-auto text-[11px] tabular-nums text-ink-faint">
+              {node.promptCount}
+            </span>
+          </label>
+          {hasChildren && (
+            <button
+              type="button"
+              onClick={() => toggleNode(node.id)}
+              aria-label={isExpanded ? t("left_rail.collapse_folder") : t("left_rail.expand_folder")}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink"
+            >
+              <ChevronRight size={12} className={isExpanded ? "rotate-90" : ""} />
+            </button>
+          )}
+        </div>
+        {hasChildren && isExpanded && node.children.map((child) => renderNode(child, depth + 1))}
+      </div>
+    );
+  };
+
+  const roots = tree?.children ?? [];
+
   return (
     <DialogShell
       open={open}
       onOpenChange={onOpenChange}
       title={t("move_to.collection")}
-      width="max-w-sm"
+      // Auto-sized to its content, but the user can drag the bottom edge to
+      // stretch it up to 60% of the window height; beyond that the tree
+      // scrolls inside while the header and footer stay put.
+      size="flex max-h-[60vh] w-[min(24rem,calc(100vw-2rem))] resize-y flex-col overflow-auto"
     >
-      <div className="max-h-64 space-y-0.5 overflow-y-auto">
-        {(collections ?? []).length === 0 && (
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
+        {roots.length === 0 && (
           <p className="text-[12px] text-ink-faint">
             {t("prompt_list.no_collections")}
           </p>
         )}
-        {(collections ?? []).map((collection) => {
-          const member = selectedCollectionIds.includes(collection.id);
-          return (
-            <label
-              key={collection.id}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-ink-dim hover:bg-hover"
-            >
-              <input
-                type="checkbox"
-                aria-label={collection.name}
-                checked={member}
-                disabled={updateMemberships.isPending}
-                onChange={(event) => {
-                  const checked = event.currentTarget.checked;
-                  setSelectedCollectionIds((current) => {
-                    if (checked) {
-                      return current.includes(collection.id) ? current : [...current, collection.id];
-                    }
-                    return current.filter((id) => id !== collection.id);
-                  });
-                }}
-                className="accent-accent"
-              />
-              {collection.name}
-              <span className="ml-auto text-[11px] tabular-nums text-ink-faint">
-                {collection.promptCount}
-              </span>
-            </label>
-          );
-        })}
+        {roots.map((node) => renderNode(node, 0))}
       </div>
-      <div className="mt-4 flex justify-end gap-2">
+      <div className="mt-4 flex shrink-0 justify-end gap-2">
         <button
           type="button"
           onClick={() => onOpenChange(false)}
