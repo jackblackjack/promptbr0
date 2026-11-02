@@ -29,10 +29,13 @@ system permission when you enable a global shortcut for the first time.
 When the search is empty, the palette shows up to 20 recently updated prompts,
 with starred prompts first. Start typing to search titles, descriptions, tags,
 notes, and saved version content. Selecting a match found through saved history
-resolves the prompt's current saved version. Fill any `{{variables}}`, check the
+resolves the prompt's current saved version. The preview shows the prompt with
+its active [optional blocks](prompt-management.md#optional-blocks) appended;
+switches next to the preview include or exclude blocks for this copy only.
+Fill any `{{variables}}`, check the
 exact plain-text preview, then choose **Copy prompt** or press
-<kbd>⌘Enter</kbd> / <kbd>Ctrl+Enter</kbd>. Search text and variable values are
-temporary and clear whenever the palette is dismissed.
+<kbd>⌘Enter</kbd> / <kbd>Ctrl+Enter</kbd>. Search text, block switches, and
+variable values are temporary and clear whenever the palette is dismissed.
 
 The feature is off by default and does not launch PromptBr0 or create a
 login item. Settings show whether the shortcut registered successfully. If a

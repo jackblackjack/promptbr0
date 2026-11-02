@@ -63,13 +63,15 @@ Add any model IDs the catalog doesn't know about (e.g. locally pulled Ollama mod
 
 ## Step 4: Run Against Multiple Models in Parallel
 
-1. Fill in the **Run variables** when prompted: the **Run** button opens a dialog with an input field for each `{{variable}}` in the prompt.
+1. Select **Run** on the prompt: the **Generated prompt** window opens with the
+   full text that will be sent. Fill in any `{{variable}}` fields right in the
+   text — for example:
    - `language`: `typescript`
    - `source_code`: `function calc(a,b,c){ if(c=='add') return a+b; if(c=='sub') return a-b; return 0; }`
-2. In the **Model Picker** next to **Run**, select up to 6 models across your connected providers (e.g. a Claude, a GPT, and a Gemini model).
+2. In the **Model Picker** at the bottom of the window, select up to 6 models across your connected providers (e.g. a Claude, a GPT, and a Gemini model).
 3. Click **Run**.
 
-PromptBr0 streams the responses in parallel, showing live status per model (**Queued** → **Streaming** → **Done** / **Failed**) plus latency, token counts, and estimated USD cost. Variable values are remembered per prompt for your next run. You can **Cancel** in-flight runs at any time.
+PromptBr0 streams the responses in parallel, showing live status per model (**Queued** → **Streaming** → **Done** / **Failed**) plus latency, token counts, and estimated USD cost. You can **Cancel** in-flight runs at any time.
 
 ---
 

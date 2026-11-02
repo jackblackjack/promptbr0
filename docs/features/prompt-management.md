@@ -34,6 +34,33 @@ as a standalone prompt, or compare two versions side by side or as a unified
 diff. Duplicate actions always copy the version displayed or explicitly chosen,
 not an unrelated branch head.
 
+## Optional blocks
+
+Optional blocks are toggleable text fragments that belong to a prompt but not
+to any saved version. Each block has a description, a text, and a default
+on/off state. When a prompt runs or is copied, every active block's text is
+appended to the end of the prompt, one after another, exactly as written.
+
+- **Create blocks** right in the **New prompt** dialog, or later in the editor:
+  the **Optional blocks** panel below the editor lists every block with a
+  switch, a description field, and an expandable text area, plus controls to
+  reorder or delete blocks. Changes are saved immediately — blocks are not
+  part of the draft you edit by hand.
+- **Adjust per run:** the run window shows a switch for every block, so you
+  can include or exclude a block for a single run without changing its
+  default. See [Run prompts with AI models](ai-execution-and-models.md).
+- **Bake into a new version:** when the combination of active blocks becomes
+  part of the prompt itself, select **Bake into new version** in the blocks
+  panel. PromptBr0 creates a new version whose text contains the active
+  blocks appended, removes those blocks from the list, and keeps your current
+  editor text as the draft on top of the new version — so nothing is appended
+  twice. Inactive blocks survive in the list.
+
+Blocks are per-prompt extras, not versions: they do not appear in version
+diffs, they are not searchable on their own, and they are not included in
+suggested variations. They do travel with the prompt across export/import and
+device sync.
+
 ## Browse history as a list or graph
 
 Open a prompt's **History** tab and use the **List** / **Graph** switcher to
