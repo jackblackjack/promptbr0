@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Copy, Loader2, Play, X } from "lucide-react";
+import { Copy, Loader2, Pencil, Play, X } from "lucide-react";
 import { extractVariableNames, type ModelRef } from "../lib/ai-prefs";
 import { assemblePromptContent } from "../lib/blocks";
+import { renderPromptVariablesBounded } from "../lib/variables";
 import { t, tCount } from "../lib/i18n";
 import { cx } from "../lib/time";
 import { useToast } from "../lib/toast";
@@ -11,12 +12,19 @@ import { ModelPicker } from "./model-picker";
 import { ToggleSwitch } from "./ui";
 import type { PromptBlockDto } from "../../../shared/ipc.js";
 
+/** Escapes a variable name for literal use inside a RegExp. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * The unified run window (title stays "Generated prompt"): shows the full
- * prompt — base content with active optional blocks appended — as editable
- * text, with per-use block toggles, the model picker and the Run action.
- * Edits are ephemeral: the text goes to ai:run as typed (unfilled {{vars}}
- * travel as-is), and closing with edits asks for confirmation.
+ * The unified run window ("Prompt preparation"): shows the full prompt —
+ * base content with active optional blocks appended — as text with per-use
+ * block toggles, the model picker and the Run action. The text is read-only
+ * by default; an explicit edit toggle opts into hand edits, which are
+ * ephemeral (the text goes to ai:run as typed). Unfilled {{vars}} get a
+ * fill panel; typing there substitutes every occurrence live and survives
+ * block re-assembly.
  */
 export function RunWindow({
   open,
@@ -46,7 +54,23 @@ export function RunWindow({
   const { toast } = useToast();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  // The text is read-only until the user explicitly opts into hand edits.
+  const [editing, setEditing] = useState(false);
   const [text, setText] = useState(baseContent);
+  // Values typed into the variable fill panel. Empty string means "not
+  // supplied" — the placeholder stays in the text.
+  const [values, setValues] = useState<Record<string, string>>({});
+  // The latest text with placeholders intact. The fill panel lists its
+  // variables (filled ones included, with their values) and inputs
+  // re-render from it, so incremental typing and re-edits keep working;
+  // manual text edits replace it, substitutions don't.
+  const [template, setTemplate] = useState(baseContent);
+  // Whether the text carries hand edits (as opposed to fill-panel
+  // substitutions, which survive re-assembly).
+  const [manualEdited, setManualEdited] = useState(false);
+  // When set (default), variables without values are removed from the text
+  // at the moment it is copied or run; unchecked, they travel as-is.
+  const [stripUnfilled, setStripUnfilled] = useState(true);
   // Pending toggle over dirty text — applied only after the rebuild confirm.
   const [rebuildAsk, setRebuildAsk] = useState<{ id: string; next: boolean } | null>(null);
   const [closeAsk, setCloseAsk] = useState(false);
@@ -55,11 +79,25 @@ export function RunWindow({
   // (or the block defaults) mid-decision.
   const [snapshot, setSnapshot] = useState({ base: baseContent, blocks });
 
+  /** A text transition that is not driven by the fill panel: placeholders in
+   * it become unfilled again, so their stored values reset. */
+  const resetText = (next: string) => {
+    setText(next);
+    setTemplate(next);
+    const present = new Set(extractVariableNames(next));
+    setValues((current) =>
+      Object.fromEntries(Object.entries(current).filter(([name]) => !present.has(name))),
+    );
+  };
+
   useEffect(() => {
     if (!open) return;
     setSnapshot({ base: baseContent, blocks });
     setOverrides({});
-    setText(assemblePromptContent(baseContent, blocks));
+    setEditing(false);
+    setManualEdited(false);
+    setStripUnfilled(true);
+    resetText(assemblePromptContent(baseContent, blocks));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -67,19 +105,44 @@ export function RunWindow({
     () => assemblePromptContent(snapshot.base, snapshot.blocks, overrides),
     [snapshot, overrides],
   );
-  // Any re-assembly (confirmed toggle) replaces the text; manual edits never
-  // change behind the user's back because `text` is the single source.
+  // Re-assembly (open or a confirmed block toggle) re-renders from the new
+  // assembly but keeps variable fills — only hand edits are discarded.
   useEffect(() => {
-    setText(assembled);
+    const names = new Set(extractVariableNames(assembled));
+    const kept = Object.fromEntries(
+      Object.entries(values).filter(([name]) => names.has(name)),
+    );
+    const supplied = Object.fromEntries(
+      Object.entries(kept).filter(([, v]) => v.length > 0),
+    );
+    setValues(kept);
+    setTemplate(assembled);
+    setText(renderPromptVariablesBounded(assembled, supplied));
+    setManualEdited(false);
+    // `values` is deliberately not a dependency: the rebuild must only fire
+    // when the assembly changes, not on every panel keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assembled]);
   const dirty = text !== assembled;
 
   const toggleBlock = (id: string, next: boolean) => {
-    if (text !== assembled) {
+    // Fills survive re-assembly, so only hand edits need a confirm.
+    if (manualEdited) {
       setRebuildAsk({ id, next });
       return;
     }
     setOverrides((current) => ({ ...current, [id]: next }));
+  };
+
+  /** Typing into a fill-panel input re-renders the intact template with all
+   * supplied values, replacing every occurrence of the variable at once. */
+  const setVariableValue = (name: string, value: string) => {
+    const next = { ...values, [name]: value };
+    setValues(next);
+    const supplied = Object.fromEntries(
+      Object.entries(next).filter(([, v]) => v.length > 0),
+    );
+    setText(renderPromptVariablesBounded(template, supplied));
   };
 
   const requestClose = () => {
@@ -91,18 +154,41 @@ export function RunWindow({
   };
 
   const copy = () => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(textToSend);
     toast(t("run_controls.copied"), "success");
   };
 
   const run = () => {
     if (selection.length === 0) return;
-    onRun(text);
+    onRun(textToSend);
     // Progress and results live in the compare view, not here.
     onOpenChange(false);
   };
 
-  const unfilledCount = extractVariableNames(text).length;
+  // One stable input per variable of the template, filled ones included —
+  // fields never disappear mid-session, so a value can always be corrected.
+  const templateVars = useMemo(() => extractVariableNames(template), [template]);
+  // Template variables without a supplied value. Derived from the template —
+  // not from placeholder occurrences in the text — so a value that itself
+  // contains {{placeholders}} stays literal content and is never mistaken
+  // for an unfilled variable (nor stripped by "clear unfilled").
+  const unfilled = useMemo(
+    () => templateVars.filter((name) => (values[name] ?? "").length === 0),
+    [templateVars, values],
+  );
+  // What actually leaves the window: with "clear unfilled" on, variables
+  // without values are removed instead of traveling as {{placeholders}}.
+  const textToSend = useMemo(() => {
+    if (!stripUnfilled || unfilled.length === 0) return text;
+    let out = text;
+    for (const name of unfilled) {
+      out = out.replace(
+        new RegExp(`\\{\\{\\s*${escapeRegExp(name)}\\s*\\}\\}`, "gu"),
+        "",
+      );
+    }
+    return out;
+  }, [text, unfilled, stripUnfilled]);
 
   return (
     <>
@@ -120,16 +206,33 @@ export function RunWindow({
           >
             <div className="flex items-center justify-between px-5 pt-5 pb-2">
               <Dialog.Title className="text-sm font-semibold text-ink">
-                {t("run_controls.generated_prompt")}
+                {t("run_controls.title")}
               </Dialog.Title>
-              <button
-                type="button"
-                onClick={requestClose}
-                aria-label={t("dialog.close")}
-                className="rounded-md p-1 text-ink-faint transition-colors hover:bg-hover hover:text-ink"
-              >
-                <X size={15} />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEditing((value) => !value)}
+                  aria-pressed={editing}
+                  title={t("run_window.edit_toggle")}
+                  className={cx(
+                    "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] transition-colors",
+                    editing
+                      ? "border-accent/40 bg-accent-soft font-medium text-accent"
+                      : "border-line text-ink-dim hover:bg-hover hover:text-ink",
+                  )}
+                >
+                  <Pencil size={12} />
+                  {t("run_window.edit_toggle")}
+                </button>
+                <button
+                  type="button"
+                  onClick={requestClose}
+                  aria-label={t("dialog.close")}
+                  className="rounded-md p-1 text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
             {blocks.length > 0 && (
               <div
@@ -158,21 +261,59 @@ export function RunWindow({
               </div>
             )}
             {/* 75vw × 80vh = 60% of the window area; flex-1 lets the textarea
-                fill the dialog under the toggles and footer. */}
+                fill the dialog under the toggles and footer. Read-only until
+                the user opts in via the edit toggle in the header. */}
             <textarea
               value={text}
-              onChange={(event) => setText(event.target.value)}
+              readOnly={!editing}
+              onChange={(event) => {
+                resetText(event.target.value);
+                setManualEdited(true);
+              }}
               spellCheck={false}
               className="mx-5 mb-2 min-h-[8rem] w-[calc(100%-2.5rem)] flex-1 resize-none overflow-y-auto rounded-md border border-line bg-app px-2.5 py-1.5 font-mono text-[13px] leading-relaxed text-ink focus:outline-none focus:ring-1 focus:ring-accent/40"
             />
-            {unfilledCount > 0 && (
-              <p className="px-5 pb-2 text-[11px] text-ink-faint">
-                {tCount(unfilledCount, {
-                  one: "run_window.unfilled_vars_one",
-                  few: "run_window.unfilled_vars_few",
-                  many: "run_window.unfilled_vars_many",
-                })}
-              </p>
+            {templateVars.length > 0 && (
+              <div
+                role="group"
+                aria-label={t("run_window.variables_group")}
+                className="mx-5 mb-2 max-h-44 space-y-2 overflow-y-auto rounded-md border border-line bg-raised p-3"
+              >
+                {unfilled.length > 0 && (
+                  <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+                    <span>
+                      {tCount(unfilled.length, {
+                        one: "run_window.unfilled_vars_one",
+                        few: "run_window.unfilled_vars_few",
+                        many: "run_window.unfilled_vars_many",
+                      })}
+                    </span>
+                    <label className="flex items-center gap-1.5 text-ink-dim">
+                      <input
+                        type="checkbox"
+                        checked={stripUnfilled}
+                        onChange={(event) => setStripUnfilled(event.target.checked)}
+                        className="accent-accent"
+                      />
+                      {t("run_window.clear_unfilled")}
+                    </label>
+                  </p>
+                )}
+                {templateVars.map((name) => (
+                  <label key={name} className="flex items-center gap-2">
+                    <span className="shrink-0 font-mono text-xs font-medium text-ink-dim">
+                      {`{{${name}}}`}
+                    </span>
+                    <input
+                      value={values[name] ?? ""}
+                      onChange={(event) => setVariableValue(name, event.target.value)}
+                      aria-label={t("run_window.variable_input_aria", { name })}
+                      maxLength={100_000}
+                      className="w-full min-w-0 rounded-md border border-line bg-app px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-faint focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/40"
+                    />
+                  </label>
+                ))}
+              </div>
             )}
             <div className="flex items-center gap-2 px-5 pb-5">
               <button
@@ -197,10 +338,12 @@ export function RunWindow({
                     copy();
                     onOpenChange(false);
                   }}
-                  className="rounded-md border border-line px-3 py-1.5 text-[13px] text-ink-dim transition-colors hover:bg-hover hover:text-ink"
+                  className="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-strong"
                 >
                   {t("run_controls.copy_close")}
                 </button>
+                {/* Separates the copy actions from the model picker + Run. */}
+                <div aria-hidden="true" className="h-6 w-px shrink-0 bg-line" />
                 <ModelPicker
                   multi
                   selection={selection}

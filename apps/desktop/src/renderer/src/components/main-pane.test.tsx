@@ -163,7 +163,7 @@ async function startRun(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("button", { name: /select models/i }));
   await user.click(await screen.findByRole("option", { name: /model-live/i }));
   await user.click(
-    within(screen.getByRole("dialog", { name: "Generated prompt" })).getByRole("button", { name: "Run" }),
+    within(screen.getByRole("dialog", { name: "Prompt preparation" })).getByRole("button", { name: "Run" }),
   );
 }
 
@@ -284,11 +284,18 @@ describe("MainPane live run progress", () => {
     await user.click(await screen.findByRole("button", { name: "Run" }));
     await user.click(await screen.findByRole("button", { name: /select models/i }));
     await user.click(await screen.findByRole("option", { name: /model-live/i }));
-    const dialog = await screen.findByRole("dialog", { name: "Generated prompt" });
-    // The full prompt is editable; variables stay inline in the text.
-    const textarea = within(dialog).getByRole("textbox");
+    const dialog = await screen.findByRole("dialog", { name: "Prompt preparation" });
+    // The text starts read-only; editing is opt-in. Variables stay inline in
+    // the text and get a fill-panel input beside the editor.
+    const textarea = dialog.querySelector("textarea")!;
     expect(textarea).toHaveValue("Base draft with {{name}}");
+    expect(textarea.readOnly).toBe(true);
+    await user.click(await screen.findByRole("button", { name: "Edit mode" }));
+    expect(within(dialog).getByRole("textbox", { name: "Value for name" })).toHaveValue("");
     await user.type(textarea, " filled");
+
+    // As-typed means unfilled placeholders travel as-is: clear checkbox off.
+    await user.click(within(dialog).getByRole("checkbox", { name: "Clear unfilled" }));
 
     await user.click(within(dialog).getByRole("button", { name: "Run" }));
 
@@ -298,7 +305,7 @@ describe("MainPane live run progress", () => {
         expect.objectContaining({ content: "Base draft with {{name}} filled", variables: {} }),
       ),
     );
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Generated prompt" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Prompt preparation" })).toBeNull());
   });
   it("drives the live compare view through queued → streaming → completed", async () => {
     const user = userEvent.setup();
