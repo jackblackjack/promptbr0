@@ -30,6 +30,35 @@ and derived caches stay on the destination device.
 You can also export one prompt from **More actions → Export prompt JSON**. That
 file contains the prompt and its versions, notes, and run history.
 
+## Export and import a collection
+
+A collection — with all of its nested subfolders — can be shared as a single
+`.pbrcol` file.
+
+**Export:** right-click a collection in the sidebar and choose **Export
+collection…**. The file lists the folders and which prompts belong where; it
+does not contain the prompts themselves, so nothing about your prompts changes
+on either device.
+
+**Import:** select the import button next to the **Collections** heading and
+choose a `.pbrcol` file. PromptBr0 shows a preview first: how many folders the
+file holds, which prompts were found in your library, and which were not
+(skipped ones are listed by name). The import always creates a top-level
+collection and never modifies your prompts.
+
+If a collection with the same name already exists at the top level, you choose
+what happens:
+
+- **Replace existing** — the current collection and its subfolders are removed
+  and the imported one takes their place. A backup is saved automatically
+  first, and prompts are never deleted.
+- **Add as copy** — the import lands under a new name like "Design (2)".
+- **Skip import** — nothing is imported; your library stays as it is.
+
+Without a name conflict the collection is simply added at the top level.
+Collection files are separate from both whole-library export and multi-device
+sync.
+
 ## History and Trash
 
 **History** in the left rail is a library-wide feed of recently created
