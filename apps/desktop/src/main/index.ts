@@ -120,6 +120,7 @@ import {
 } from "./ai.js";
 import { createImportDispatcher, deepLinkFromArgv, parseImportDeepLink } from "./deep-link.js";
 import { assertAuthorizedMainFrame, MarkdownImportService } from "./markdown-import.js";
+import { assertLibraryMainFrame } from "./ipc-sender-guard.js";
 import {
   createDailyBackupScheduler,
   type DailyBackupScheduler,
@@ -342,44 +343,60 @@ function registerIpcHandlers(): void {
   const lib = getLibrary();
   markdownImportService = new MarkdownImportService({ lib });
 
+  // Every channel registered below answers only the library window's main
+  // frame — anything else (the quick-palette window, a navigated subframe,
+  // a foreign webContents) is rejected before the handler body runs. The
+  // quick-palette registrar at the bottom wires that window's own channels
+  // with checks specific to it, so it does not go through this wrapper.
+  // `mainWindow` is read at invoke time, so window recreation stays correct.
+  const handle = (
+    channel: string,
+    handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => unknown,
+  ): void => {
+    ipcMain.handle(channel, (event, payload) => {
+      assertLibraryMainFrame(event, mainWindow);
+      return handler(event, payload);
+    });
+  };
+
   // -------------------------------------------------------------- prompts
-  ipcMain.handle(IPC_CHANNELS.promptList, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptList, (_e, payload: unknown) => {
     const query = promptListSchema.parse(payload ?? {});
     return lib
       .listPrompts(query)
       .map((row) => toPromptSummary(row, tagsForPrompt(row.id), currentVersionLabelFor(row), lib.listCollectionIdsForPrompt(row.id)));
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptGet, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptGet, (_e, payload: unknown) => {
     const prompt = lib.getPrompt(idParam.parse(payload));
     return prompt ? toDetail(prompt) : null;
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptCreate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptCreate, (_e, payload: unknown) => {
     const input = promptCreateSchema.parse(payload);
     const prompt = lib.createPrompt(input);
     console.log(`[main] created prompt ${prompt.id} (${prompt.title})`);
     return toDetail(prompt);
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptDuplicate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptDuplicate, (_e, payload: unknown) => {
     const input = promptDuplicateSchema.parse(payload);
     const prompt = lib.duplicatePrompt(input);
     console.log(`[main] duplicated prompt ${input.promptId} as ${prompt.id} (${prompt.title})`);
     return toDetail(prompt);
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptUpdate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptUpdate, (_e, payload: unknown) => {
     const { id, patch } = promptUpdateSchema.parse(payload);
     return toDetail(lib.updatePromptMetadata(id, patch));
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptSetBlocks, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptSetBlocks, (_e, payload: unknown) => {
     const { promptId, blocks } = promptSetBlocksSchema.parse(payload);
     return toDetail(lib.setPromptBlocks(promptId, blocks));
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptBakeBlocks, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptBakeBlocks, (_e, payload: unknown) => {
     const input = promptBakeBlocksSchema.parse(payload);
     const { version, blocks } = lib.bakeBlocksIntoNewVersion(input);
     const prompt = lib.getPrompt(input.promptId);
@@ -389,24 +406,24 @@ function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptSetStarred, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptSetStarred, (_e, payload: unknown) => {
     const { id, starred } = z.object({ id: idParam, starred: z.boolean() }).parse(payload);
     lib.setStarred(id, starred);
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptSoftDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptSoftDelete, (_e, payload: unknown) => {
     lib.softDeletePrompt(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptRestore, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptRestore, (_e, payload: unknown) => {
     lib.restorePrompt(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptHardDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.promptHardDelete, (_e, payload: unknown) => {
     lib.hardDeletePrompt(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.promptExport, async (event, payload: unknown): Promise<FileOpResult> => {
+  handle(IPC_CHANNELS.promptExport, async (event, payload: unknown): Promise<FileOpResult> => {
     const promptId = idParam.parse(payload);
     const prompt = lib.getPrompt(promptId);
     if (!prompt) throw new Error(`Prompt not found: ${promptId}`);
@@ -430,14 +447,14 @@ function registerIpcHandlers(): void {
   });
 
   // ------------------------------------------------------------- versions
-  ipcMain.handle(IPC_CHANNELS.versionCreate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionCreate, (_e, payload: unknown) => {
     const input = versionCreateSchema.parse(payload);
     const version = lib.createVersion(input);
     const prompt = lib.getPrompt(input.promptId);
     return toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null);
   });
 
-  ipcMain.handle(IPC_CHANNELS.versionList, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionList, (_e, payload: unknown) => {
     const promptId = idParam.parse(payload);
     const prompt = lib.getPrompt(promptId);
     return lib
@@ -445,7 +462,7 @@ function registerIpcHandlers(): void {
       .map((v) => toVersionDto(v, v.branch_name, prompt?.current_version_id ?? null));
   });
 
-  ipcMain.handle(IPC_CHANNELS.versionGet, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionGet, (_e, payload: unknown) => {
     const versionId = idParam.parse(payload);
     const version = lib.getVersion(versionId);
     if (!version) return null;
@@ -454,26 +471,26 @@ function registerIpcHandlers(): void {
     return { ...toVersionDto(version, branchName, prompt?.current_version_id ?? null), content: version.content, contentFormat: version.content_format };
   });
 
-  ipcMain.handle(IPC_CHANNELS.versionSetCurrent, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionSetCurrent, (_e, payload: unknown) => {
     const { promptId, versionId } = versionSetCurrentSchema.parse(payload);
     lib.setCurrentVersion(promptId, versionId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.versionUpdateContent, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionUpdateContent, (_e, payload: unknown) => {
     const { versionId, content } = versionUpdateContentSchema.parse(payload);
     const version = lib.updateVersionContent(versionId, content);
     const prompt = lib.getPrompt(version.prompt_id);
     return toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null);
   });
 
-  ipcMain.handle(IPC_CHANNELS.versionUpdateLabel, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionUpdateLabel, (_e, payload: unknown) => {
     const { versionId, label } = versionUpdateLabelSchema.parse(payload);
     const version = lib.updateVersionLabel(versionId, label);
     const prompt = lib.getPrompt(version.prompt_id);
     return toVersionDto(version, branchNameFor(version.branch_id), prompt?.current_version_id ?? null);
   });
 
-  ipcMain.handle(IPC_CHANNELS.versionDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.versionDelete, (_e, payload: unknown) => {
     const { versionId } = versionDeleteSchema.parse(payload);
     lib.deleteVersion(versionId);
   });
@@ -486,21 +503,21 @@ function registerIpcHandlers(): void {
   }
 
   // --------------------------------------------------------------- drafts
-  ipcMain.handle(IPC_CHANNELS.draftGet, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.draftGet, (_e, payload: unknown) => {
     return lib.getDraft(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.draftSet, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.draftSet, (_e, payload: unknown) => {
     const input = draftSetSchema.parse(payload);
     lib.setDraft(input.promptId, input.content, "baseVersionId" in input ? input.baseVersionId : undefined);
   });
 
   // -------------------------------------------------------------- branches
-  ipcMain.handle(IPC_CHANNELS.branchList, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.branchList, (_e, payload: unknown) => {
     return lib.listBranches(idParam.parse(payload)).map(toBranchDto);
   });
 
-  ipcMain.handle(IPC_CHANNELS.branchCreate, (_e, payload: unknown): BranchCreateResult => {
+  handle(IPC_CHANNELS.branchCreate, (_e, payload: unknown): BranchCreateResult => {
     const input = branchCreateSchema.parse(payload);
     const { branch, version } = lib.createBranch(input);
     const prompt = lib.getPrompt(input.promptId);
@@ -512,63 +529,63 @@ function registerIpcHandlers(): void {
   });
 
   // ----------------------------------------------------------- suggestions
-  ipcMain.handle(IPC_CHANNELS.suggestionList, (): SuggestionDto[] =>
+  handle(IPC_CHANNELS.suggestionList, (): SuggestionDto[] =>
     lib.listSuggestions().map(toSuggestionDto),
   );
 
-  ipcMain.handle(IPC_CHANNELS.suggestionApprove, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.suggestionApprove, (_e, payload: unknown) => {
     const { versionId, setAsCurrent } = suggestionApproveSchema.parse(payload);
     lib.approveSuggestion(versionId, { setAsCurrent: setAsCurrent ?? false });
     console.log(`[main] approved suggestion ${versionId}${setAsCurrent ? " (set as current)" : ""}`);
   });
 
-  ipcMain.handle(IPC_CHANNELS.suggestionReject, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.suggestionReject, (_e, payload: unknown) => {
     const { versionId } = suggestionRejectSchema.parse(payload);
     lib.rejectSuggestion(versionId);
     console.log(`[main] rejected suggestion ${versionId}`);
   });
 
   // ----------------------------------------------------------------- notes
-  ipcMain.handle(IPC_CHANNELS.noteAdd, (_e, payload: unknown) => {    const note = lib.addNote(noteAddSchema.parse(payload));
+  handle(IPC_CHANNELS.noteAdd, (_e, payload: unknown) => {    const note = lib.addNote(noteAddSchema.parse(payload));
     return toNoteDto(note, versionLabelFor);
   });
 
-  ipcMain.handle(IPC_CHANNELS.noteList, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.noteList, (_e, payload: unknown) => {
     return lib.listNotes(idParam.parse(payload)).map((n) => toNoteDto(n, versionLabelFor));
   });
 
-  ipcMain.handle(IPC_CHANNELS.noteDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.noteDelete, (_e, payload: unknown) => {
     lib.deleteNote(idParam.parse(payload));
   });
 
   // ------------------------------------------------------------------ tags
-  ipcMain.handle(IPC_CHANNELS.tagCreate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.tagCreate, (_e, payload: unknown) => {
     return toTagDto(lib.createTag(tagCreateSchema.parse(payload)));
   });
 
-  ipcMain.handle(IPC_CHANNELS.tagList, () => lib.listTags().map(toTagDto));
+  handle(IPC_CHANNELS.tagList, () => lib.listTags().map(toTagDto));
 
-  ipcMain.handle(IPC_CHANNELS.tagAddToPrompt, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.tagAddToPrompt, (_e, payload: unknown) => {
     const { promptId, tagId } = tagOnPromptSchema.parse(payload);
     lib.addTagToPrompt(promptId, tagId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.tagRemoveFromPrompt, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.tagRemoveFromPrompt, (_e, payload: unknown) => {
     const { promptId, tagId } = tagOnPromptSchema.parse(payload);
     lib.removeTagFromPrompt(promptId, tagId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.tagDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.tagDelete, (_e, payload: unknown) => {
     lib.deleteTag(tagDeleteSchema.parse(payload).id);
   });
 
   // ------------------------------------------------------------ collections
-  ipcMain.handle(IPC_CHANNELS.collectionCreate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionCreate, (_e, payload: unknown) => {
     const input = collectionCreateSchema.parse(payload);
     return toCollectionDto(lib.createCollection({ name: input.name, parentCollectionId: input.parentCollectionId ?? null }));
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionUpdate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionUpdate, (_e, payload: unknown) => {
     const { id, patch } = collectionUpdateSchema.parse(payload);
     lib.updateCollection(id, {
       name: patch.name,
@@ -577,42 +594,42 @@ function registerIpcHandlers(): void {
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionMove, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionMove, (_e, payload: unknown) => {
     const input = collectionMoveSchema.parse(payload);
     lib.moveCollection(input);
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionDelete, (_e, payload: unknown) => {
     lib.deleteCollection(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionTree, () => {
+  handle(IPC_CHANNELS.collectionTree, () => {
     const tree = lib.getCollectionTree();
     return toTreeDto(tree);
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionByParent, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionByParent, (_e, payload: unknown) => {
     const { parentId } = z.object({ parentId: z.string().nullable() }).parse(payload);
     return lib.listCollectionsByParent(parentId).map(toCollectionDto);
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionList, () => lib.listCollections().map(toCollectionDto));
+  handle(IPC_CHANNELS.collectionList, () => lib.listCollections().map(toCollectionDto));
 
-  ipcMain.handle(IPC_CHANNELS.collectionAddPrompt, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionAddPrompt, (_e, payload: unknown) => {
     const { collectionId, promptId } = collectionPromptSchema.parse(payload);
     lib.addPromptToCollection(collectionId, promptId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionRemovePrompt, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionRemovePrompt, (_e, payload: unknown) => {
     const { collectionId, promptId } = collectionPromptSchema.parse(payload);
     lib.removePromptFromCollection(collectionId, promptId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionForPrompt, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionForPrompt, (_e, payload: unknown) => {
     return lib.listCollectionIdsForPrompt(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.collectionPath, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.collectionPath, (_e, payload: unknown) => {
     const { collectionId } = collectionPathSchema.parse(payload);
     return lib.getCollectionPath(collectionId).map((b) => ({
       id: b.id,
@@ -622,13 +639,13 @@ function registerIpcHandlers(): void {
   });
 
   // ---------------------------------------------------------------- search
-  ipcMain.handle(IPC_CHANNELS.search, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.search, (_e, payload: unknown) => {
     const { query } = searchSchema.parse(payload);
     return lib.search(query).map((r) => ({ promptId: r.promptId, title: r.title, snippet: r.snippet }));
   });
 
   // ------------------------------------------------------- ratings and runs
-  ipcMain.handle(IPC_CHANNELS.ratingAdd, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.ratingAdd, (_e, payload: unknown) => {
     const input = ratingAddSchema.parse(payload);
     // Ratings have a polymorphic target (no FK) — validate existence here.
     const exists =
@@ -637,18 +654,18 @@ function registerIpcHandlers(): void {
     return toRatingDto(lib.addRating(input));
   });
 
-  ipcMain.handle(IPC_CHANNELS.ratingLatest, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.ratingLatest, (_e, payload: unknown) => {
     const { targetType, targetId } = ratingAveragesSchema.parse(payload);
     const rating = lib.getLatestRating(targetType, targetId);
     return rating ? toRatingDto(rating) : null;
   });
 
-  ipcMain.handle(IPC_CHANNELS.ratingAverages, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.ratingAverages, (_e, payload: unknown) => {
     const { targetType, targetId } = ratingAveragesSchema.parse(payload);
     return lib.getAverageRatings(targetType, targetId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.ratingVersionSummaries, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.ratingVersionSummaries, (_e, payload: unknown) => {
     const promptId = idParam.parse(payload);
     const result: Record<string, RatingSummaryDto> = {};
     for (const { version_id, ...summary } of lib.getVersionRatingSummaries(promptId)) {
@@ -657,25 +674,25 @@ function registerIpcHandlers(): void {
     return result;
   });
 
-  ipcMain.handle(IPC_CHANNELS.runAdd, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.runAdd, (_e, payload: unknown) => {
     const input = runAddSchema.parse(payload);
     return toRunDto(lib.addRun(input), versionLabelFor);
   });
 
-  ipcMain.handle(IPC_CHANNELS.runDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.runDelete, (_e, payload: unknown) => {
     lib.deleteRun(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.runList, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.runList, (_e, payload: unknown) => {
     return lib.listRuns(idParam.parse(payload)).map((r) => toRunDto(r, versionLabelFor));
   });
 
-  ipcMain.handle(IPC_CHANNELS.runUpdateOutcome, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.runUpdateOutcome, (_e, payload: unknown) => {
     const { runId, outcomeRating } = runUpdateOutcomeSchema.parse(payload);
     return toRunDto(lib.updateRunOutcome(runId, outcomeRating), versionLabelFor);
   });
 
-  ipcMain.handle(IPC_CHANNELS.runUpdateMetrics, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.runUpdateMetrics, (_e, payload: unknown) => {
     const { runId, patch } = runUpdateMetricsSchema.parse(payload);
     return toRunDto(lib.updateRunMetrics(runId, patch), versionLabelFor);
   });
@@ -683,52 +700,52 @@ function registerIpcHandlers(): void {
   // --------------------------------------------------------------------- ai
   const aiDeps: AiServiceDeps = { lib, cipher: keyCipher };
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderTypes, () => providerTypesInfo());
+  handle(IPC_CHANNELS.aiProviderTypes, () => providerTypesInfo());
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderCreate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiProviderCreate, (_e, payload: unknown) => {
     const provider = aiCreateProvider(aiDeps, aiProviderCreateSchema.parse(payload));
     console.log(`[main] created AI provider ${provider.id} (${provider.type}: ${provider.name})`);
     return provider;
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderUpdate, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiProviderUpdate, (_e, payload: unknown) => {
     return aiUpdateProvider(aiDeps, aiProviderUpdateSchema.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderDelete, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiProviderDelete, (_e, payload: unknown) => {
     lib.deleteProvider(idParam.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderList, () => aiListProviders(aiDeps));
+  handle(IPC_CHANNELS.aiProviderList, () => aiListProviders(aiDeps));
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderTest, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiProviderTest, (_e, payload: unknown) => {
     const { providerId, modelId } = aiProviderTestSchema.parse(payload);
     return aiTestProvider(aiDeps, providerId, modelId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiModelsSet, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiModelsSet, (_e, payload: unknown) => {
     const { providerId, models } = aiModelsSetSchema.parse(payload);
     lib.setProviderModels(providerId, models);
     return toAiProviderDto(lib, lib.getProvider(providerId)!);
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiModelHide, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiModelHide, (_e, payload: unknown) => {
     return aiSetModelHidden(aiDeps, aiModelHideSchema.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiEnvDetect, () => detectEnvKeys(lib));
+  handle(IPC_CHANNELS.aiEnvDetect, () => detectEnvKeys(lib));
 
-  ipcMain.handle(IPC_CHANNELS.aiProviderConnectEnv, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiProviderConnectEnv, (_e, payload: unknown) => {
     return aiConnectEnvProvider(aiDeps, aiProviderConnectEnvSchema.parse(payload));
   });
 
   // Catalog handlers never throw: get returns null when empty/corrupt,
   // refresh reports failure and keeps serving the stale cache (offline-safe).
-  ipcMain.handle(IPC_CHANNELS.aiCatalogGet, () => aiGetCatalog(lib));
+  handle(IPC_CHANNELS.aiCatalogGet, () => aiGetCatalog(lib));
 
-  ipcMain.handle(IPC_CHANNELS.aiCatalogRefresh, () => aiRefreshCatalog(aiDeps));
+  handle(IPC_CHANNELS.aiCatalogRefresh, () => aiRefreshCatalog(aiDeps));
 
-  ipcMain.handle(IPC_CHANNELS.aiRun, async (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiRun, async (_e, payload: unknown) => {
     const input = aiRunSchema.parse(payload);
     const group = await runModelGroup(aiDeps, input, (event) => {
       // Live progress side channel; the invoke still resolves with the
@@ -742,27 +759,27 @@ function registerIpcHandlers(): void {
     return group;
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiRunCancel, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiRunCancel, (_e, payload: unknown) => {
     const { runGroupId } = aiRunCancelSchema.parse(payload);
     const cancelled = cancelRunGroup(runGroupId);
     console.log(`[main] ai:run-cancel ${runGroupId}: ${cancelled ? "aborted" : "not in flight"}`);
     return { cancelled };
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiAssist, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiAssist, (_e, payload: unknown) => {
     return runAssist(aiDeps, aiAssistSchema.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.aiJudge, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.aiJudge, (_e, payload: unknown) => {
     return judgeRunGroup(aiDeps, aiJudgeSchema.parse(payload));
   });
 
-  ipcMain.handle(IPC_CHANNELS.runGroupList, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.runGroupList, (_e, payload: unknown) => {
     return lib.listRunGroups(idParam.parse(payload));
   });
 
   // ------------------------------------------------------ Markdown import
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.markdownPreview,
     async (event, payload: unknown): Promise<MarkdownImportPreviewDto> => {
       const senderId = assertAuthorizedMainFrame(event, mainWindow);
@@ -778,7 +795,7 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.markdownConfirm,
     (event, payload: unknown): MarkdownImportResultDto => {
       const senderId = assertAuthorizedMainFrame(event, mainWindow);
@@ -788,7 +805,7 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle(IPC_CHANNELS.markdownDiscard, (event, payload: unknown): void => {
+  handle(IPC_CHANNELS.markdownDiscard, (event, payload: unknown): void => {
     const senderId = assertAuthorizedMainFrame(event, mainWindow);
     const { previewId } = markdownDiscardSchema.parse(payload);
     getMarkdownImportService().discard(previewId, senderId);
@@ -797,46 +814,46 @@ function registerIpcHandlers(): void {
   // ------------------------------------------------------------------- sync
   const sync = getDesktopSync();
 
-  ipcMain.handle(IPC_CHANNELS.syncGetStatus, () => sync.status());
+  handle(IPC_CHANNELS.syncGetStatus, () => sync.status());
 
-  ipcMain.handle(IPC_CHANNELS.syncSetEnabled, async (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.syncSetEnabled, async (_e, payload: unknown) => {
     const { enabled } = syncSetEnabledSchema.parse(payload);
     return sync.setEnabled(enabled);
   });
 
-  ipcMain.handle(IPC_CHANNELS.syncSetDeviceName, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.syncSetDeviceName, (_e, payload: unknown) => {
     const { name } = syncSetDeviceNameSchema.parse(payload);
     return sync.setDeviceName(name);
   });
 
-  ipcMain.handle(IPC_CHANNELS.syncSetListenPort, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.syncSetListenPort, (_e, payload: unknown) => {
     const { port } = syncSetListenPortSchema.parse(payload);
     return sync.setListenPort(port);
   });
 
-  ipcMain.handle(IPC_CHANNELS.syncBeginPairing, () => sync.beginPairing());
+  handle(IPC_CHANNELS.syncBeginPairing, () => sync.beginPairing());
 
-  ipcMain.handle(IPC_CHANNELS.syncCancelPairing, () => sync.cancelPairing());
+  handle(IPC_CHANNELS.syncCancelPairing, () => sync.cancelPairing());
 
-  ipcMain.handle(IPC_CHANNELS.syncPairWithCode, async (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.syncPairWithCode, async (_e, payload: unknown) => {
     const input = syncPairWithCodeSchema.parse(payload);
     return sync.pairWithCode(input.address, input.port, input.code);
   });
 
-  ipcMain.handle(IPC_CHANNELS.syncRespondPairing, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.syncRespondPairing, (_e, payload: unknown) => {
     const { requestId, accept } = syncRespondPairingSchema.parse(payload);
     sync.respondPairing(requestId, accept);
   });
 
-  ipcMain.handle(IPC_CHANNELS.syncForgetDevice, (_e, payload: unknown) => {
+  handle(IPC_CHANNELS.syncForgetDevice, (_e, payload: unknown) => {
     const { fingerprint } = syncForgetDeviceSchema.parse(payload);
     return sync.forgetDevice(fingerprint);
   });
 
-  ipcMain.handle(IPC_CHANNELS.syncNow, () => sync.now());
+  handle(IPC_CHANNELS.syncNow, () => sync.now());
 
   // --------------------------------------------------------------- library
-  ipcMain.handle(IPC_CHANNELS.libraryStats, (): LibraryStats => {
+  handle(IPC_CHANNELS.libraryStats, (): LibraryStats => {
     const count = (sql: string): number => (getDb().prepare(sql).get() as { c: number }).c;
     return {
       prompts: count("SELECT COUNT(*) AS c FROM prompts WHERE deleted_at IS NULL"),
@@ -849,7 +866,7 @@ function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle(IPC_CHANNELS.libraryExport, async (event): Promise<FileOpResult> => {
+  handle(IPC_CHANNELS.libraryExport, async (event): Promise<FileOpResult> => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) throw new Error("Cannot show a save dialog without a window");
     const result = await dialog.showSaveDialog(win, {
@@ -863,7 +880,7 @@ function registerIpcHandlers(): void {
     return { canceled: false, path: result.filePath };
   });
 
-  ipcMain.handle(IPC_CHANNELS.libraryImport, async (event): Promise<ImportResult> => {
+  handle(IPC_CHANNELS.libraryImport, async (event): Promise<ImportResult> => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) throw new Error("Cannot show an open dialog without a window");
     const result = await dialog.showOpenDialog(win, {
@@ -879,18 +896,18 @@ function registerIpcHandlers(): void {
     return { canceled: false, summary };
   });
 
-  ipcMain.handle(IPC_CHANNELS.libraryBackupNow, () => runBackupNow());
+  handle(IPC_CHANNELS.libraryBackupNow, () => runBackupNow());
 
   // Danger-zone op from Settings → Data & Backup: hard-delete every
   // soft-deleted prompt. Core exposes per-id hard delete only, so loop here.
-  ipcMain.handle(IPC_CHANNELS.libraryEmptyTrash, () => {
+  handle(IPC_CHANNELS.libraryEmptyTrash, () => {
     const trashed = lib.listPrompts({ deletedOnly: true });
     for (const prompt of trashed) lib.hardDeletePrompt(prompt.id);
     console.log(`[main] emptied trash (${trashed.length} prompts hard-deleted)`);
     return trashed.length;
   });
 
-  ipcMain.handle(IPC_CHANNELS.libraryRecentActivity, (_e, payload: unknown): ActivityItemDto[] => {
+  handle(IPC_CHANNELS.libraryRecentActivity, (_e, payload: unknown): ActivityItemDto[] => {
     const { limit } = recentActivitySchema.parse(payload ?? {});
     return lib.listRecentActivity(limit ?? 50).map((item) => ({
       promptId: item.prompt_id,
@@ -904,15 +921,15 @@ function registerIpcHandlers(): void {
   });
 
   // --------------------------------------------------------------- updates
-  ipcMain.handle(IPC_CHANNELS.updateGetState, () =>
+  handle(IPC_CHANNELS.updateGetState, () =>
     updateStateDtoSchema.parse(getUpdateService().getState()),
   );
 
-  ipcMain.handle(IPC_CHANNELS.updateCheck, async () =>
+  handle(IPC_CHANNELS.updateCheck, async () =>
     updateStateDtoSchema.parse(await getUpdateService().check("manual")),
   );
 
-  ipcMain.handle(IPC_CHANNELS.updateSetAutomaticChecks, (_event, payload: unknown) => {
+  handle(IPC_CHANNELS.updateSetAutomaticChecks, (_event, payload: unknown) => {
     const { enabled } = updateSetAutomaticChecksSchema.parse(payload);
     const state = updateStateDtoSchema.parse(
       getUpdateService().setAutomaticChecksEnabled(enabled),
@@ -920,17 +937,17 @@ function registerIpcHandlers(): void {
     return state;
   });
 
-  ipcMain.handle(IPC_CHANNELS.updateOpenDownload, async (_event, payload: unknown) => {
+  handle(IPC_CHANNELS.updateOpenDownload, async (_event, payload: unknown) => {
     const { assetName } = updateOpenDownloadSchema.parse(payload);
     await getUpdateService().openDownload(assetName);
   });
 
-  ipcMain.handle(IPC_CHANNELS.updateOpenReleaseNotes, async () => {
+  handle(IPC_CHANNELS.updateOpenReleaseNotes, async () => {
     await getUpdateService().openReleaseNotes();
   });
 
   // ------------------------------------------------------------------- app
-  ipcMain.handle(IPC_CHANNELS.appInfo, () => {
+  handle(IPC_CHANNELS.appInfo, () => {
     return {
       version: __APP_VERSION__,
       dbPath: dbPath ?? "",
@@ -948,12 +965,12 @@ function registerIpcHandlers(): void {
     }
   };
 
-  ipcMain.handle(IPC_CHANNELS.trayGetState, (event) => {
+  handle(IPC_CHANNELS.trayGetState, (event) => {
     assertLibraryWindow(event);
     return getTrayController().getState();
   });
 
-  ipcMain.handle(IPC_CHANNELS.traySetEnabled, (event, payload: unknown) => {
+  handle(IPC_CHANNELS.traySetEnabled, (event, payload: unknown) => {
     assertLibraryWindow(event);
     const { enabled } = traySettingsSchema.parse(payload);
     return getTrayController().setEnabled(enabled);
@@ -961,19 +978,21 @@ function registerIpcHandlers(): void {
 
   // The tray menu follows the interface language; the renderer pushes changes
   // and main persists them so a relaunch starts with the right labels.
-  ipcMain.handle(IPC_CHANNELS.appSetLanguage, (event, payload: unknown) => {
+  handle(IPC_CHANNELS.appSetLanguage, (event, payload: unknown) => {
     assertLibraryWindow(event);
     const { language } = setLanguageSchema.parse(payload);
     getTrayController().setLanguage(language);
   });
 
   // Links in rendered Markdown previews open in the system browser. Only
-  // http(s) URLs are allowed — never file:, javascript:, etc.
-  ipcMain.handle(IPC_CHANNELS.openExternal, (_e, payload: unknown) => {
+  // https URLs are allowed — never file:, javascript:, etc., and not plain
+  // http either, which would send the URL (and any tokens in it) in
+  // cleartext. An http link therefore fails closed with an invoke error.
+  handle(IPC_CHANNELS.openExternal, (_e, payload: unknown) => {
     const url = z.string().trim().url().max(2000).parse(payload);
     const protocol = new URL(url).protocol;
-    if (protocol !== "https:" && protocol !== "http:") {
-      throw new Error(`Refusing to open non-http(s) URL: ${protocol}//…`);
+    if (protocol !== "https:") {
+      throw new Error(`Refusing to open non-https URL: ${protocol}//…`);
     }
     return shell.openExternal(url);
   });
@@ -981,7 +1000,7 @@ function registerIpcHandlers(): void {
   // The bundled third-party notices: an extraResource in packaged builds, the
   // monorepo root in dev checkouts. Served as text for the in-app licenses
   // dialog — the renderer never touches the filesystem itself.
-  ipcMain.handle(IPC_CHANNELS.licensesText, () => {
+  handle(IPC_CHANNELS.licensesText, () => {
     const candidates = [
       path.join(process.resourcesPath, "THIRD_PARTY_NOTICES.md"),
       path.resolve(app.getAppPath(), "..", "..", "THIRD_PARTY_NOTICES.md"),
