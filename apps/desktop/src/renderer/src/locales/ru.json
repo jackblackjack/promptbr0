@@ -275,7 +275,7 @@
   "editor_tab.discard_confirm_title": "Отменить правки?",
   "editor_tab.edit": "Редактировать",
   "editor_tab.failed_save_draft": "Не удалось сохранить черновик",
-  "editor_tab.improve": "Улучшить",
+  "editor_tab.improve": "Улучшить с ИИ",
   "editor_tab.improved_draft_applied": "Улучшенный черновик применён — сохраните изменения или создайте новую версию, чтобы сохранить",
   "editor_tab.inline_code": "Встроенный код",
   "editor_tab.insert_variable": "Вставить переменную",
