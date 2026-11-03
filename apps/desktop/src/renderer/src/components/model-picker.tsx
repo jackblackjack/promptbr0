@@ -262,7 +262,7 @@ export function ModelPicker({
           // z-[80]: the picker also lives inside dialogs (judge dialog content
           // is z-[70], its overlay z-[60]) — a lower z would put the options
           // under the dialog's own overlay and swallow option clicks.
-          className="pb-menu z-[80] flex max-h-[min(24rem,calc(100vh-5rem))] w-80 max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-line-strong bg-raised shadow-xl shadow-black/40"
+          className="pb-menu z-[80] flex max-h-[min(28rem,calc(100vh-5rem))] w-[26rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-line-strong bg-raised shadow-xl shadow-black/40"
         >
           <div className="flex items-center gap-2 border-b border-line px-2.5 py-2">
             <Search size={12} className="shrink-0 text-ink-faint" />
@@ -325,6 +325,7 @@ export function ModelPicker({
                 const hint = row.model.meta
                   ? [formatContext(row.model.meta.contextWindow), formatPricing(row.model.meta)].filter(Boolean).join(" · ")
                   : null;
+                const showId = row.model.displayName !== null && row.model.displayName !== row.model.modelId;
                 return (
                   <div key={`${modelRefKey(row.model)}-${row.group}`}>
                     {header}
@@ -361,13 +362,22 @@ export function ModelPicker({
                           {isSelected && <Check size={10} />}
                         </span>
                       )}
-                      <span className="min-w-0 flex-1 truncate">
-                        {row.model.displayName ?? row.model.modelId}
-                        {row.model.displayName && row.model.displayName !== row.model.modelId && (
-                          <span className="ml-1.5 font-mono text-[10px] text-ink-faint">{row.model.modelId}</span>
+                      {/* Two-line rows: a long id on the same line as the name
+                          gets truncated into uselessness, so the id and the
+                          context/pricing hint live on their own line. Models
+                          without a distinct name stay single-line (the id is
+                          not repeated). */}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">
+                          {row.model.displayName ?? row.model.modelId}
+                        </span>
+                        {(showId || hint) && (
+                          <span className="flex min-w-0 items-center gap-1.5 text-[10px] text-ink-faint">
+                            {showId && <span className="min-w-0 truncate font-mono">{row.model.modelId}</span>}
+                            {hint && <span className="min-w-0 truncate tabular-nums">{hint}</span>}
+                          </span>
                         )}
                       </span>
-                      {hint && <span className="shrink-0 text-[10px] tabular-nums text-ink-faint">{hint}</span>}
                       <button
                         type="button"
                         aria-label={t("model_picker.hide_model_aria", { model: row.model.modelId })}
